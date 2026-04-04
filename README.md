@@ -277,9 +277,8 @@ This fork adds automatic tray-to-spool matching for **non-Bambu spools without N
 Bambu Studio assigns a unique profile ID (e.g. `Pa8c5a1a`) to each filament profile. The ha-bambulab integration exposes this as the `filament_id` attribute on AMS tray sensors. When you load a spool, Bambu broadcasts its profile ID — SpoolmanSync uses this to narrow candidates to the right profile, then color to pick the exact color variant.
 
 **Setup:**
-1. In Spoolman, go to **Settings** → **Extra Fields** → add a field on **Filaments** with key `filament_id`
-2. Link profiles on the **Filaments** page (see [Filament Profile Linking](#filament-profile-linking)) — this sets the `filament_id` extra field automatically
-3. Ensure the HA automation passes `filament_id` — the generated automation config in this fork includes it automatically
+1. Link profiles on the **Filaments** page (see [Filament Profile Linking](#filament-profile-linking)) — the `filament_id` extra field on Spoolman filaments is created and populated automatically
+2. Ensure the HA automation passes `filament_id` — the generated automation config in this fork includes it automatically
 
 **Single-candidate bypass:** If exactly one Spoolman filament has the matching `filament_id`, it is selected immediately without a color check. The color threshold only applies when multiple filaments share the same profile ID (e.g. you have several colors of the same product line) — in that case, color distance determines which one is loaded.
 
@@ -318,7 +317,7 @@ The Filaments page includes a direct login form so you can fetch profiles withou
 
 > After a successful login, all your Bambu Studio filament profiles are fetched and stored locally. Click **Refresh** at any time to re-sync.
 
-<!-- Screenshot: Filaments page connect form -->
+![Filaments page — profile table with link counts and sortable columns](docs/filaments-table.png)
 
 ### Linking Profiles to Spoolman Filaments
 
@@ -337,7 +336,7 @@ Click **Link to Spoolman** (or **Manage Links**) to open the link modal:
 - Each row shows the filament name, material, vendor, color swatch, and Spoolman ID (`#42`)
 - Click **Link N filaments** to save
 
-<!-- Screenshot: Filaments link modal with multi-select -->
+![Filaments link modal — multi-select with Material/Vendor filters](docs/filaments-link-modal.png)
 
 > **Why multi-select?** A single Bambu profile ID (e.g. `GFSNL02`) covers all colors of a filament line. Linking all your color variants lets the color+threshold step (Priority 2) pick the exact spool loaded.
 
