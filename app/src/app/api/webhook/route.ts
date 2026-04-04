@@ -271,9 +271,50 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      // No serial match — try fuzzy match by color + material + name hint
+      const { color } = body;
+      if (color && material) {
+        const fuzzyResult = await client.findSpoolByColorAndMaterial(color, material, name);
+
+        if (fuzzyResult) {
+          const { spool: matchedSpool, confidence } = fuzzyResult;
+          await client.assignSpoolToTray(matchedSpool.id, trayUniqueId);
+
+          const updateEvent: SpoolUpdateEvent = {
+            type: 'assign',
+            spoolId: matchedSpool.id,
+            spoolName: matchedSpool.filament.name,
+            trayId: tray_entity_id,
+            timestamp: Date.now(),
+          };
+          spoolEvents.emit(SPOOL_UPDATED, updateEvent);
+
+          console.log(
+            `[SpoolmanSync] Fuzzy-matched spool #${matchedSpool.id} (${matchedSpool.filament.name}) to ${tray_entity_id} [${confidence}] via color=${color} material=${material} name="${name}"`,
+          );
+
+          await createActivityLog({
+            type: 'spool_change',
+            message: `Auto-assigned spool #${matchedSpool.id} to ${tray_entity_id} (fuzzy match: color+material${confidence === 'fuzzy' ? '+name' : ''})`,
+            details: {
+              spoolId: matchedSpool.id,
+              trayId: tray_entity_id,
+              matchedBy: `fuzzy_${confidence}`,
+              printerReports: { name, material, color, tray_uuid },
+            },
+          });
+
+          return NextResponse.json({
+            status: 'success',
+            spool: matchedSpool,
+            matchedBy: `fuzzy_${confidence}`,
+          });
+        }
+      }
+
       // No auto-match - user needs to manually assign spool
       // Log what the printer detected for debugging
-      console.log(`Tray ${tray_entity_id} changed but no matching spool found. Printer reports: name="${name}", material="${material}", tray_uuid="${tray_uuid}"`);
+      console.log(`Tray ${tray_entity_id} changed but no matching spool found. Printer reports: name="${name}", material="${material}", color="${color}", tray_uuid="${tray_uuid}"`);
 
       // Log to activity log so users can see all tray changes in the webapp
       await createActivityLog({
@@ -281,7 +322,7 @@ export async function POST(request: NextRequest) {
         message: `Tray change detected: ${tray_entity_id} has filament but no matching spool`,
         details: {
           trayId: tray_entity_id,
-          printerReports: { name, material, tray_uuid },
+          printerReports: { name, material, color, tray_uuid },
           action: 'manual_assignment_required',
         },
       });

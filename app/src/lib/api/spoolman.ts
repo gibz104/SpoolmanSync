@@ -383,6 +383,80 @@ export class SpoolmanClient {
   }
 
   /**
+   * Find a spool by color hex + material type, with optional name hint for ranking.
+   *
+   * Handles non-Bambu spools (Sunlu etc.) that have no RFID serial.
+   * AMS sends color as RRGGBBAA (8 chars) or RRGGBB (6 chars), with or without #.
+   * Spoolman stores color_hex as 6-char hex without #.
+   * Material is normalized: PLA+/PLA-HF → PLA, PETG-HF → PETG, ABS+ → ABS, etc.
+   *
+   * Returns the single best matching active spool, or null if 0 or 2+ equally scored.
+   */
+  async findSpoolByColorAndMaterial(
+    rawColor: string,
+    rawMaterial: string,
+    nameHint?: string,
+  ): Promise<{ spool: Spool; confidence: 'exact' | 'fuzzy' } | null> {
+    const spools = await this.getSpools();
+    const activeSpools = spools.filter(s => !s.archived);
+
+    // Normalize color: strip #, take first 6 chars (drop alpha channel)
+    const normalizeColor = (c: string) =>
+      c.replace(/^#/, '').toLowerCase().slice(0, 6);
+
+    // Normalize material: uppercase, strip common suffixes/variants
+    const normalizeMaterial = (m: string) =>
+      m.toUpperCase()
+        .replace(/[+-](HF|CF|GF|ST|MATTE|SILK|SPARKLE|GLOW)$/i, '')
+        .replace(/\+$/, '')
+        .trim();
+
+    const targetColor = normalizeColor(rawColor);
+    const targetMaterial = normalizeMaterial(rawMaterial);
+
+    // Filter by color + material
+    const candidates = activeSpools.filter(s => {
+      const spoolColor = normalizeColor(s.filament.color_hex ?? '');
+      const spoolMaterial = normalizeMaterial(s.filament.material ?? '');
+      return spoolColor === targetColor && spoolMaterial === targetMaterial;
+    });
+
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return { spool: candidates[0], confidence: 'exact' };
+
+    // Multiple candidates — rank by name similarity if nameHint provided
+    if (!nameHint) {
+      console.warn(
+        `[SpoolmanSync] Fuzzy match: ${candidates.length} spools match color=${targetColor} material=${targetMaterial}, no name hint to disambiguate`,
+      );
+      return null;
+    }
+
+    const hintWords = nameHint.toLowerCase().split(/\s+/).filter(Boolean);
+
+    const scored = candidates.map(s => {
+      const spoolText = [s.filament.vendor?.name, s.filament.name]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      const matchCount = hintWords.filter(w => spoolText.includes(w)).length;
+      return { spool: s, score: matchCount };
+    });
+
+    scored.sort((a, b) => b.score - a.score);
+
+    // Only auto-assign if the top candidate clearly beats the second
+    if (scored[0].score === 0 || scored[0].score === scored[1].score) {
+      console.warn(
+        `[SpoolmanSync] Fuzzy match: ambiguous name match for "${nameHint}" among ${candidates.length} candidates`,
+      );
+      return null;
+    }
+
+    return { spool: scored[0].spool, confidence: 'fuzzy' };
+  }
+
+  /**
    * Update spool weight (use filament)
    */
   async useWeight(spoolId: number, weight: number): Promise<void> {
