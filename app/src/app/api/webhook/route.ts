@@ -271,8 +271,48 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // No serial match — try fuzzy match by color + material + name hint
-      const { color } = body;
+      // No serial match — try filament_id + color match
+      // filament_id is the Bambu slicer profile ID stored in Spoolman filament extra field
+      const { color, filament_id } = body;
+      if (filament_id && color) {
+        const matchedSpool = await client.findSpoolByFilamentIdAndColor(filament_id, color);
+
+        if (matchedSpool) {
+          await client.assignSpoolToTray(matchedSpool.id, trayUniqueId);
+
+          const updateEvent: SpoolUpdateEvent = {
+            type: 'assign',
+            spoolId: matchedSpool.id,
+            spoolName: matchedSpool.filament.name,
+            trayId: tray_entity_id,
+            timestamp: Date.now(),
+          };
+          spoolEvents.emit(SPOOL_UPDATED, updateEvent);
+
+          console.log(
+            `[SpoolmanSync] Matched spool #${matchedSpool.id} (${matchedSpool.filament.name}) to ${tray_entity_id} via filament_id=${filament_id} + color=${color}`,
+          );
+
+          await createActivityLog({
+            type: 'spool_change',
+            message: `Auto-assigned spool #${matchedSpool.id} to ${tray_entity_id} (matched by filament_id+color)`,
+            details: {
+              spoolId: matchedSpool.id,
+              trayId: tray_entity_id,
+              matchedBy: 'filament_id_color',
+              printerReports: { name, material, color, filament_id, tray_uuid },
+            },
+          });
+
+          return NextResponse.json({
+            status: 'success',
+            spool: matchedSpool,
+            matchedBy: 'filament_id_color',
+          });
+        }
+      }
+
+      // No filament_id match — try fuzzy match by color + material + name hint
       if (color && material) {
         const fuzzyResult = await client.findSpoolByColorAndMaterial(color, material, name);
 

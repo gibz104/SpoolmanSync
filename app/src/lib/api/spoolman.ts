@@ -19,6 +19,7 @@ export interface Filament {
   density: number;
   diameter: number;
   weight?: number;
+  extra?: Record<string, string>;
 }
 
 export interface Spool {
@@ -380,6 +381,73 @@ export class SpoolmanClient {
     }
 
     return null;
+  }
+
+  /**
+   * Find a spool by Bambu filament_id (slicer profile ID stored in Spoolman filament extra field)
+   * combined with color distance to pick the right color variant.
+   *
+   * filament_id alone covers a profile (e.g. all colors of "SUNLU PLA Meta"),
+   * color then narrows to the specific spool (e.g. the green one vs the blue one).
+   * Uses the same COLOR_THRESHOLD=40 as findSpoolByColorAndMaterial.
+   */
+  async findSpoolByFilamentIdAndColor(
+    filamentId: string,
+    rawColor: string,
+  ): Promise<Spool | null> {
+    const spools = await this.getSpools();
+    const activeSpools = spools.filter(s => !s.archived);
+
+    const normalizeColor = (c: string) => c.replace(/^#/, '').toLowerCase().slice(0, 6);
+    const parseRgb = (hex: string): [number, number, number] | null => {
+      if (hex.length !== 6) return null;
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      if (isNaN(r) || isNaN(g) || isNaN(b)) return null;
+      return [r, g, b];
+    };
+    const COLOR_THRESHOLD = 40;
+    const colorDistance = (a: string, b: string): number => {
+      const rgbA = parseRgb(a);
+      const rgbB = parseRgb(b);
+      if (!rgbA || !rgbB) return Infinity;
+      return Math.sqrt(
+        Math.pow(rgbA[0] - rgbB[0], 2) +
+        Math.pow(rgbA[1] - rgbB[1], 2) +
+        Math.pow(rgbA[2] - rgbB[2], 2),
+      );
+    };
+
+    const targetColor = normalizeColor(rawColor);
+
+    // Find spools whose filament has matching filament_id extra field
+    const byId = activeSpools.filter(s => {
+      const raw = s.filament.extra?.['filament_id'];
+      if (!raw) return false;
+      return parseExtraValue(raw) === filamentId;
+    });
+
+    if (byId.length === 0) return null;
+
+    // Among those, find closest color within threshold
+    const withDistance = byId
+      .map(s => ({ spool: s, distance: colorDistance(normalizeColor(s.filament.color_hex ?? ''), targetColor) }))
+      .filter(c => c.distance <= COLOR_THRESHOLD)
+      .sort((a, b) => a.distance - b.distance);
+
+    if (withDistance.length === 0) return null;
+    if (withDistance.length === 1) return withDistance[0].spool;
+
+    // Multiple within threshold — return closest only if it clearly wins
+    if (withDistance[0].distance === withDistance[1].distance) {
+      console.warn(
+        `[SpoolmanSync] filament_id match: ambiguous color for filament_id=${filamentId}, color≈${targetColor}`,
+      );
+      return null;
+    }
+
+    return withDistance[0].spool;
   }
 
   /**
