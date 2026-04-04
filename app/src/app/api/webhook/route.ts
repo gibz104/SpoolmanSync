@@ -274,8 +274,11 @@ export async function POST(request: NextRequest) {
       // No serial match — try filament_id + color match
       // filament_id is the Bambu slicer profile ID stored in Spoolman filament extra field
       const { color, filament_id } = body;
+      console.log(`[SpoolmanSync] tray_change received: filament_id="${filament_id ?? '(missing)'}" color="${color ?? '(missing)'}" material="${material}" name="${name}"`);
+
       if (filament_id && color) {
         const matchedSpool = await client.findSpoolByFilamentIdAndColor(filament_id, color);
+        console.log(`[SpoolmanSync] filament_id+color lookup: filament_id=${filament_id} → ${matchedSpool ? `spool #${matchedSpool.id} (${matchedSpool.filament.name})` : 'no match'}`);
 
         if (matchedSpool) {
           await client.assignSpoolToTray(matchedSpool.id, trayUniqueId);
