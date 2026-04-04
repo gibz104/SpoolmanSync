@@ -421,11 +421,21 @@ export class SpoolmanClient {
 
     const targetColor = normalizeColor(rawColor);
 
+    // Spoolman's /api/v1/spool returns filament objects with extra: {} always empty.
+    // Filament extra fields (including filament_id) are only in /api/v1/filament.
+    // Fetch filaments separately and build a lookup map: filament numeric id → bambu filament_id string.
+    const allFilaments = await this.getFilaments();
+    const filamentExtraMap = new Map<number, string>();
+    for (const f of allFilaments) {
+      const raw = f.extra?.['filament_id'];
+      if (raw) {
+        filamentExtraMap.set(f.id, parseExtraValue(raw));
+      }
+    }
+
     // Find spools whose filament has matching filament_id extra field
     const byId = activeSpools.filter(s => {
-      const raw = s.filament.extra?.['filament_id'];
-      if (!raw) return false;
-      return parseExtraValue(raw) === filamentId;
+      return filamentExtraMap.get(s.filament.id) === filamentId;
     });
 
     if (byId.length === 0) return null;
