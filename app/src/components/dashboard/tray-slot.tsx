@@ -354,7 +354,7 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
             </div>
           )}
           <CommandInput placeholder="Search spools by name, vendor, material, ID, or any field..." />
-          <CommandList className="max-h-[300px]">
+          <CommandList className="max-h-[60vh]">
             <CommandEmpty>No spools found matching your filters.</CommandEmpty>
             <CommandGroup heading={`Available Spools (${filteredSpools.length})`}>
               {filteredSpools.map((spool) => (

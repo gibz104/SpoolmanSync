@@ -27,10 +27,34 @@ SpoolmanSync automatically tracks which filament spools are loaded in your Bambu
 | Low stock alerts | ✅ | ❌ |
 | Automatic filament usage tracking | ✅ | ✅ |
 
+## Fork Additions
+
+This fork extends the upstream project with improvements focused on reliable automatic spool matching for non-Bambu filaments. See the relevant sections below for full details.
+
+**Filament Profile Linking page:**
+- [Direct Bambu Cloud login](#filament-profile-linking) from the Filaments page — no printer re-registration needed
+- Multi-select link modal — one Bambu profile ID can map to many Spoolman filaments (different colors of the same material)
+- Material + Vendor filter dropdowns and spool ID in the link modal
+- Sortable table columns with link count display ("5 Linked" vs "Unlinked")
+- Spoolman quick-access button in the page header
+- Persistent color reference panel state (saved across reloads)
+
+**Dashboard:**
+- Taller spool selector popup (60 vh instead of fixed 300 px)
+
+**Auto-matching improvements:**
+- [Single-candidate bypass](#priority-2-filament-profile-id--color) — skips the color threshold when exactly one spool matches a filament profile ID
+- [Learning from manual assignments](#learning-from-manual-assignments) — each manual assignment teaches the system to auto-match the same spool next time
+
+**Building this fork:** Clone this repository and follow the [Building from Source](#building-from-source) instructions. There is no pre-built image for this fork. If the changes are merged upstream, the official image will be updated automatically.
+
+---
+
 ## Features
 
 - **Dashboard** - View all your printers, AMS units, and tray assignments at a glance
 - **Spool Assignment** - Click any tray to assign a spool from your Spoolman inventory
+- **Filament Profile Linking** - Link Bambu Studio filament profiles to Spoolman filaments for reliable automatic matching without NFC tags
 - **QR Code Scanning** - Scan Spoolman QR codes or custom barcodes to quickly look up and assign spools
 - **QR Label Generation** - Create and print QR code labels for your spools. Scan with your phone camera to quickly assign to AMS trays
 - **NFC Tag Writing** - Write spool links to NFC sticker tags. Tap with your phone to assign spools (Android only: Chrome, Edge, Opera, Samsung Internet)
@@ -254,16 +278,80 @@ Bambu Studio assigns a unique profile ID (e.g. `Pa8c5a1a`) to each filament prof
 
 **Setup:**
 1. In Spoolman, go to **Settings** → **Extra Fields** → add a field on **Filaments** with key `filament_id`
-2. For each filament, set the `filament_id` value to the Bambu profile ID (visible in the ha-bambulab AMS tray sensor attributes as `filament_id`, e.g. `Pa8c5a1a`)
+2. Link profiles on the **Filaments** page (see [Filament Profile Linking](#filament-profile-linking)) — this sets the `filament_id` extra field automatically
 3. Ensure the HA automation passes `filament_id` — the generated automation config in this fork includes it automatically
+
+**Single-candidate bypass:** If exactly one Spoolman filament has the matching `filament_id`, it is selected immediately without a color check. The color threshold only applies when multiple filaments share the same profile ID (e.g. you have several colors of the same product line) — in that case, color distance determines which one is loaded.
 
 ### Priority 3: Color + Material Fuzzy Match
 
 Falls back to matching by color (RGB Euclidean distance ≤ 40) and normalized material type (`PLA+` → `PLA`, `PETG-HF` → `PETG`, etc.). Works without any extra configuration as long as your Spoolman filament colors roughly match what you select on the Bambu machine display.
 
-**Color note:** Bambu's machine display uses a fixed palette of ~20 colors. The threshold of 40 RGB units is calibrated so adjacent palette colors (minimum ~47 units apart) are never confused.
+**Color note:** Bambu's machine display uses a fixed palette of ~20 colors. The threshold of 40 RGB units is calibrated so adjacent palette colors (minimum ~47 units apart) are never confused. See the **Bambu Color Reference** panel on the Filaments page for the full palette.
 
 If multiple spools match the same color + material, the name hint from the printer is used to disambiguate.
+
+### Learning from Manual Assignments
+
+Every time you manually assign a spool via the dashboard, SpoolmanSync learns from it to improve future auto-matching:
+
+1. **RFID serial stored** — if the tray reports a non-zero `tray_uuid` (Bambu-brand spools), it is written to the spool's `location` tag so Priority 1 (RFID) can match it on the next swap without any manual step.
+
+2. **Profile linked automatically** — if the tray name matches a known Bambu filament profile and the Spoolman filament doesn't yet have a `filament_id` set, SpoolmanSync links them. Priority 2 will then auto-match this spool on the next swap.
+
+This means the system gets smarter with use: after manually assigning a spool once, the same spool will typically be recognized automatically in subsequent swaps.
+
+---
+
+## Filament Profile Linking
+
+The **Filaments** page is the control center for linking Bambu Studio filament profiles to Spoolman filaments. This is what powers Priority 2 automatic matching — once a profile is linked, SpoolmanSync can identify which spool is loaded without NFC tags.
+
+### Connecting to Bambu Cloud
+
+The Filaments page includes a direct login form so you can fetch profiles without going through the Settings printer-registration flow (useful if your printers are already registered).
+
+1. Go to **Filaments** in the navigation
+2. If no Bambu Cloud token is stored, a connect form appears
+3. Enter your Bambu Cloud email and password and click **Connect**
+4. If your account uses two-factor authentication, enter the 6-digit code from your authenticator app
+
+> After a successful login, all your Bambu Studio filament profiles are fetched and stored locally. Click **Refresh** at any time to re-sync.
+
+<!-- Screenshot: Filaments page connect form -->
+
+### Linking Profiles to Spoolman Filaments
+
+Each row in the table is a Bambu Studio filament profile (e.g. `Sunlu PLA+ Matte`). The **Status** column shows how many Spoolman filaments are linked to that profile.
+
+| Status | Meaning |
+|--------|---------|
+| `5 Linked` | 5 Spoolman filaments point to this Bambu profile ID |
+| `Unlinked` | No Spoolman filament linked — auto-match won't fire for this profile |
+
+Click **Link to Spoolman** (or **Manage Links**) to open the link modal:
+
+- Use the **Material** and **Vendor** dropdowns to filter the filament list
+- Type in the search box to narrow further
+- **Check all color variants** of the same material — one Bambu profile ID covers all colors of a product line, so you'd typically select every color of that filament you own
+- Each row shows the filament name, material, vendor, color swatch, and Spoolman ID (`#42`)
+- Click **Link N filaments** to save
+
+<!-- Screenshot: Filaments link modal with multi-select -->
+
+> **Why multi-select?** A single Bambu profile ID (e.g. `GFSNL02`) covers all colors of a filament line. Linking all your color variants lets the color+threshold step (Priority 2) pick the exact spool loaded.
+
+### Sorting and Filtering the Table
+
+Click any column header (**Name**, **Vendor**, **Material**, **Status**) to sort. Click again to reverse. The ▲▼ indicator shows the active sort direction.
+
+The **Spoolman →** button in the header opens your Spoolman instance in a new tab for quick cross-reference.
+
+### Bambu Color Reference
+
+Expand the **Bambu Color Reference** panel at the bottom of the page to see the 20 fixed colors the Bambu machine display uses. Set your Spoolman filament colors to the closest matching entry — the auto-matcher tolerates up to 40 RGB units of distance. The panel remembers its open/closed state between page loads.
+
+<!-- Screenshot: Filaments table with sort indicators and color reference panel -->
 
 ---
 
