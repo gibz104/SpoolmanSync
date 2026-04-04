@@ -231,9 +231,39 @@ docker compose --profile external up -d     # Start
 
 2. **Manual Assignment**: Users can manually assign spools to trays via the dashboard or by scanning QR codes.
 
-3. **Automatic Sync**: When Home Assistant automations detect tray changes, they call the SpoolmanSync webhook with tray information (color, material, tag UID). SpoolmanSync matches this to spools in Spoolman and updates the `active_tray` extra field.
+3. **Automatic Sync**: When Home Assistant automations detect tray changes, they call the SpoolmanSync webhook with tray information (color, material, filament ID, tag UID). SpoolmanSync matches this to spools in Spoolman using a priority-based matching chain and updates the `active_tray` extra field.
 
 4. **Spoolman Integration**: All spool assignments are stored in Spoolman's `extra` field as `active_tray`, making it compatible with other Spoolman integrations.
+
+---
+
+## Automatic Spool Matching (No NFC Required)
+
+This fork adds automatic tray-to-spool matching for **non-Bambu spools without NFC tags** (e.g. Sunlu, Polymaker, generic brands). Matching uses a priority chain:
+
+| Priority | Method | Requires |
+|----------|--------|----------|
+| 1 | Bambu RFID serial (`tray_uuid`) | Bambu-brand spools with NFC |
+| 2 | **Filament profile ID + color** | `filament_id` set in Spoolman filament extra field |
+| 3 | **Color + material fuzzy match** | Color within RGB distance 40 of Spoolman filament color |
+| 4 | Manual assignment | Always available as fallback |
+
+### Priority 2: Filament Profile ID + Color
+
+Bambu Studio assigns a unique profile ID (e.g. `Pa8c5a1a`) to each filament profile. The ha-bambulab integration exposes this as the `filament_id` attribute on AMS tray sensors. When you load a spool, Bambu broadcasts its profile ID — SpoolmanSync uses this to narrow candidates to the right profile, then color to pick the exact color variant.
+
+**Setup:**
+1. In Spoolman, go to **Settings** → **Extra Fields** → add a field on **Filaments** with key `filament_id`
+2. For each filament, set the `filament_id` value to the Bambu profile ID (visible in the ha-bambulab AMS tray sensor attributes as `filament_id`, e.g. `Pa8c5a1a`)
+3. Ensure the HA automation passes `filament_id` — the generated automation config in this fork includes it automatically
+
+### Priority 3: Color + Material Fuzzy Match
+
+Falls back to matching by color (RGB Euclidean distance ≤ 40) and normalized material type (`PLA+` → `PLA`, `PETG-HF` → `PETG`, etc.). Works without any extra configuration as long as your Spoolman filament colors roughly match what you select on the Bambu machine display.
+
+**Color note:** Bambu's machine display uses a fixed palette of ~20 colors. The threshold of 40 RGB units is calibrated so adjacent palette colors (minimum ~47 units apart) are never confused.
+
+If multiple spools match the same color + material, the name hint from the printer is used to disambiguate.
 
 ---
 
