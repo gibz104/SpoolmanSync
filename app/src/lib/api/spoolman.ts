@@ -390,6 +390,11 @@ export class SpoolmanClient {
    * Spoolman stores color_hex as 6-char hex without #.
    * Material is normalized: PLA+/PLA-HF → PLA, PETG-HF → PETG, ABS+ → ABS, etc.
    *
+   * Color matching uses Euclidean RGB distance with threshold 40.
+   * Bambu's machine display has a fixed palette — the closest two adjacent palette
+   * colors (Red #C12E1F vs Terracotta #B15533) are ~47 units apart, so threshold 40
+   * safely distinguishes them while absorbing manufacturer color variation.
+   *
    * Returns the single best matching active spool, or null if 0 or 2+ equally scored.
    */
   async findSpoolByColorAndMaterial(
@@ -404,6 +409,30 @@ export class SpoolmanClient {
     const normalizeColor = (c: string) =>
       c.replace(/^#/, '').toLowerCase().slice(0, 6);
 
+    // Parse 6-char hex string to [r, g, b]
+    const parseRgb = (hex: string): [number, number, number] | null => {
+      if (hex.length !== 6) return null;
+      const r = parseInt(hex.slice(0, 2), 16);
+      const g = parseInt(hex.slice(2, 4), 16);
+      const b = parseInt(hex.slice(4, 6), 16);
+      if (isNaN(r) || isNaN(g) || isNaN(b)) return null;
+      return [r, g, b];
+    };
+
+    // Euclidean RGB distance — max possible is ~441 (black to white)
+    // Bambu palette neighbors are ≥47 apart, so threshold 40 won't cross-match
+    const COLOR_THRESHOLD = 40;
+    const colorDistance = (a: string, b: string): number => {
+      const rgbA = parseRgb(a);
+      const rgbB = parseRgb(b);
+      if (!rgbA || !rgbB) return Infinity;
+      return Math.sqrt(
+        Math.pow(rgbA[0] - rgbB[0], 2) +
+        Math.pow(rgbA[1] - rgbB[1], 2) +
+        Math.pow(rgbA[2] - rgbB[2], 2),
+      );
+    };
+
     // Normalize material: uppercase, strip common suffixes/variants
     const normalizeMaterial = (m: string) =>
       m.toUpperCase()
@@ -414,33 +443,40 @@ export class SpoolmanClient {
     const targetColor = normalizeColor(rawColor);
     const targetMaterial = normalizeMaterial(rawMaterial);
 
-    // Filter by color + material
-    const candidates = activeSpools.filter(s => {
-      const spoolColor = normalizeColor(s.filament.color_hex ?? '');
-      const spoolMaterial = normalizeMaterial(s.filament.material ?? '');
-      return spoolColor === targetColor && spoolMaterial === targetMaterial;
-    });
+    // Filter by material + color within threshold, tracking distance for ranking
+    type Candidate = { spool: Spool; distance: number };
+    const candidates: Candidate[] = activeSpools
+      .filter(s => normalizeMaterial(s.filament.material ?? '') === targetMaterial)
+      .map(s => ({
+        spool: s,
+        distance: colorDistance(normalizeColor(s.filament.color_hex ?? ''), targetColor),
+      }))
+      .filter(c => c.distance <= COLOR_THRESHOLD)
+      .sort((a, b) => a.distance - b.distance);
 
     if (candidates.length === 0) return null;
-    if (candidates.length === 1) return { spool: candidates[0], confidence: 'exact' };
+    if (candidates.length === 1) {
+      const isExact = candidates[0].distance === 0;
+      return { spool: candidates[0].spool, confidence: isExact ? 'exact' : 'fuzzy' };
+    }
 
-    // Multiple candidates — rank by name similarity if nameHint provided
+    // Multiple candidates within threshold — rank by name similarity if nameHint provided
     if (!nameHint) {
       console.warn(
-        `[SpoolmanSync] Fuzzy match: ${candidates.length} spools match color=${targetColor} material=${targetMaterial}, no name hint to disambiguate`,
+        `[SpoolmanSync] Fuzzy match: ${candidates.length} spools match color≈${targetColor} material=${targetMaterial}, no name hint to disambiguate`,
       );
       return null;
     }
 
     const hintWords = nameHint.toLowerCase().split(/\s+/).filter(Boolean);
 
-    const scored = candidates.map(s => {
-      const spoolText = [s.filament.vendor?.name, s.filament.name]
+    const scored = candidates.map(c => {
+      const spoolText = [c.spool.filament.vendor?.name, c.spool.filament.name]
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
       const matchCount = hintWords.filter(w => spoolText.includes(w)).length;
-      return { spool: s, score: matchCount };
+      return { spool: c.spool, score: matchCount };
     });
 
     scored.sort((a, b) => b.score - a.score);
