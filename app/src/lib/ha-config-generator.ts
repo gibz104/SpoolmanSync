@@ -391,7 +391,7 @@ function generateAutomationsYaml(
 # SpoolmanSync Automation: Tray Change Detection
 #
 # Detects physical spool changes (insert/remove) and syncs with Spoolman.
-# Triggers when any AMS tray or external spool sensor changes state.
+# Fires on any tray sensor state update; SpoolmanSync webhook decides what to do.
 # =============================================================================
 - id: 'spoolmansync_tray_change_${prefix}'
   alias: SpoolmanSync - Tray Change (${prefix})
@@ -401,16 +401,6 @@ function generateAutomationsYaml(
     - entity_id:
 ${trayEntityIds.map(id => `        - ${id}`).join('\n')}
       trigger: state
-  conditions:
-    # Only trigger if the entity is actually available
-    - condition: template
-      value_template: "{{ trigger.to_state is not none and trigger.to_state.state not in ['unavailable', 'unknown'] }}"
-    # Debounce: only trigger if tray_uuid or name actually changed between old and new state
-    - condition: template
-      value_template: >-
-        {{ trigger.from_state is none or trigger.to_state is none or
-           trigger.to_state.attributes.get('tray_uuid', '') != trigger.from_state.attributes.get('tray_uuid', '') or
-           trigger.to_state.attributes.get('name', '') != trigger.from_state.attributes.get('name', '') }}
   variables:
     tray_entity_id: "{{ trigger.entity_id }}"
     tray_uuid: "{{ state_attr(trigger.entity_id, 'tray_uuid') | default('') }}"
@@ -620,7 +610,7 @@ function generateCrealityAutomationsYaml(
 # SpoolmanSync Automation: Tray Change Detection (Creality)
 #
 # Detects physical spool changes (insert/remove) in CFS slots.
-# Triggers when any CFS slot sensor changes state.
+# Fires on any slot sensor state update; SpoolmanSync webhook decides what to do.
 # =============================================================================
 - id: 'spoolmansync_tray_change_${prefix}'
   alias: SpoolmanSync - Tray Change (${prefix})
@@ -629,15 +619,6 @@ function generateCrealityAutomationsYaml(
     - entity_id:
 ${trayEntityIds.map(id => `        - ${id}`).join('\n')}
       trigger: state
-  conditions:
-    - condition: template
-      value_template: "{{ trigger.to_state is not none and trigger.to_state.state not in ['unavailable', 'unknown'] }}"
-    # Debounce: only trigger if rfid or name actually changed
-    - condition: template
-      value_template: >-
-        {{ trigger.from_state is none or trigger.to_state is none or
-           trigger.to_state.attributes.get('rfid', '') != trigger.from_state.attributes.get('rfid', '') or
-           trigger.to_state.attributes.get('name', '') != trigger.from_state.attributes.get('name', '') }}
   variables:
     tray_entity_id: "{{ trigger.entity_id }}"
     tray_uuid: "{{ state_attr(trigger.entity_id, 'rfid') | default('') }}"
