@@ -40,12 +40,13 @@ interface PrinterWithSpools {
 interface PrinterCardProps {
   printer: PrinterWithSpools;
   spools: Spool[];
-  onSpoolAssign: (trayId: string, spoolId: number) => void;
+  onSpoolAssign: (trayId: string, spoolId: number, trayInfo?: { name?: string; material?: string; color?: string }) => void;
   onSpoolUnassign: (spoolId: number) => void;
   showSpoolLocation?: boolean;
+  showPrinterFilamentReport?: boolean;
 }
 
-export function PrinterCard({ printer, spools, onSpoolAssign, onSpoolUnassign, showSpoolLocation }: PrinterCardProps) {
+export function PrinterCard({ printer, spools, onSpoolAssign, onSpoolUnassign, showSpoolLocation, showPrinterFilamentReport }: PrinterCardProps) {
   return (
     <Card className="w-full">
       <CardHeader className="pb-3">
@@ -67,10 +68,11 @@ export function PrinterCard({ printer, spools, onSpoolAssign, onSpoolUnassign, s
                   tray={tray}
                   assignedSpool={tray.assigned_spool}
                   spools={spools}
-                  onAssign={(spoolId) => onSpoolAssign(tray.unique_id || tray.entity_id, spoolId)}
+                  onAssign={(spoolId) => onSpoolAssign(tray.unique_id || tray.entity_id, spoolId, { name: tray.name, material: tray.material, color: tray.color })}
                   onUnassign={onSpoolUnassign}
                   mismatch={tray.mismatch}
                   showLocation={showSpoolLocation}
+                  showPrinterReport={showPrinterFilamentReport}
                 />
               ))}
             </div>
@@ -91,10 +93,11 @@ export function PrinterCard({ printer, spools, onSpoolAssign, onSpoolUnassign, s
                   assignedSpool={extSpool.assigned_spool}
                   spools={spools}
                   onAssign={(spoolId) => {
-                    onSpoolAssign(extSpool.unique_id || extSpool.entity_id, spoolId);
+                    onSpoolAssign(extSpool.unique_id || extSpool.entity_id, spoolId, { name: extSpool.name, material: extSpool.material, color: extSpool.color });
                   }}
                   onUnassign={onSpoolUnassign}
                   showLocation={showSpoolLocation}
+                  showPrinterReport={showPrinterFilamentReport}
                 />
               ))}
             </div>

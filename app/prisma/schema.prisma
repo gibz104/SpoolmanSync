@@ -49,6 +49,20 @@ model Automation {
   updatedAt      DateTime @updatedAt
 }
 
+// Filament mapping: name+material+color -> spoolId
+// Enables auto-assignment for spools without RFID/QR tags
+model FilamentMapping {
+  id        String   @id @default(cuid())
+  name      String   // Filament name from printer (normalized: lowercase trimmed)
+  material  String   // Material type (normalized: uppercase trimmed)
+  color     String   // Hex color including alpha channel (normalized: lowercase, no #)
+  spoolId   Int      // Spoolman spool ID
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([name, material, color])
+}
+
 // Activity log for debugging/monitoring
 model ActivityLog {
   id        String   @id @default(cuid())

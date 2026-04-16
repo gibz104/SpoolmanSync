@@ -41,6 +41,7 @@ interface Settings {
   homeassistant: { url: string; connected: boolean } | null;
   spoolman: { url: string; connected: boolean } | null;
   showSpoolLocation?: boolean;
+  showPrinterFilamentReport?: boolean;
 }
 
 export default function Dashboard() {
@@ -220,20 +221,38 @@ export default function Dashboard() {
     };
   }, [settings?.homeassistant, settings?.spoolman, fetchData]);
 
-  const handleSpoolAssign = async (trayId: string, spoolId: number) => {
+  const handleSpoolAssign = async (trayId: string, spoolId: number, trayInfo?: { name?: string; material?: string; color?: string }) => {
     try {
       const res = await fetch('/api/spools', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ trayId, spoolId }),
+        body: JSON.stringify({
+          trayId,
+          spoolId,
+          ...(trayInfo?.name && { trayName: trayInfo.name }),
+          ...(trayInfo?.material && { trayMaterial: trayInfo.material }),
+          ...(trayInfo?.color && { trayColor: trayInfo.color }),
+        }),
       });
 
       if (!res.ok) {
         throw new Error('Failed to assign spool');
       }
 
+      const data = await res.json();
       toast.success('Spool assigned successfully');
-      fetchData(); // Refresh data
+      if (data.mappingCreated && data.spool?.filament) {
+        const f = (data.spool as Spool).filament;
+        const parts = [f.name, f.material, f.vendor?.name].filter(
+          (p): p is string => typeof p === 'string' && p.trim() !== '',
+        );
+        toast.info(
+          parts.length > 0
+            ? `Auto-mapping created for ${parts.join(' / ')}`
+            : `Auto-mapping created for spool #${spoolId}`,
+        );
+      }
+      fetchData();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to assign spool');
     }
@@ -476,6 +495,7 @@ export default function Dashboard() {
                 onSpoolAssign={handleSpoolAssign}
                 onSpoolUnassign={handleSpoolUnassign}
                 showSpoolLocation={settings?.showSpoolLocation}
+                showPrinterFilamentReport={settings?.showPrinterFilamentReport}
               />
             ))}
           </div>

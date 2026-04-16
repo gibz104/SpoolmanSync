@@ -48,6 +48,8 @@ export async function GET() {
       // Fetch optional settings
       const qrBaseUrlSetting = await prisma.settings.findUnique({ where: { key: 'qr_base_url' } });
       const showLocationSetting = await prisma.settings.findUnique({ where: { key: 'show_spool_location' } });
+      const autoMappingSetting = await prisma.settings.findUnique({ where: { key: 'auto_mapping_enabled' } });
+      const printerFilamentReportSetting = await prisma.settings.findUnique({ where: { key: 'show_printer_filament_report' } });
 
       return NextResponse.json({
         embeddedMode: false,
@@ -63,6 +65,8 @@ export async function GET() {
         } : null,
         qrBaseUrl: qrBaseUrlSetting?.value || '',
         showSpoolLocation: showLocationSetting?.value === 'true',
+        showPrinterFilamentReport: printerFilamentReportSetting?.value === 'true',
+        autoMappingEnabled: !autoMappingSetting || autoMappingSetting.value === 'true',
       });
     }
 
@@ -243,6 +247,8 @@ export async function GET() {
     // Fetch optional settings
     const qrBaseUrlSetting = await prisma.settings.findUnique({ where: { key: 'qr_base_url' } });
     const showLocationSetting = await prisma.settings.findUnique({ where: { key: 'show_spool_location' } });
+    const autoMappingSetting = await prisma.settings.findUnique({ where: { key: 'auto_mapping_enabled' } });
+    const printerFilamentReportSetting = await prisma.settings.findUnique({ where: { key: 'show_printer_filament_report' } });
 
     return NextResponse.json({
       embeddedMode,
@@ -254,6 +260,8 @@ export async function GET() {
       } : null,
       qrBaseUrl: qrBaseUrlSetting?.value || '',
       showSpoolLocation: showLocationSetting?.value === 'true',
+      showPrinterFilamentReport: printerFilamentReportSetting?.value === 'true',
+      autoMappingEnabled: !autoMappingSetting || autoMappingSetting.value === 'true',
     });
   } catch (error) {
     console.error('Error fetching settings:', error);
@@ -332,6 +340,26 @@ export async function POST(request: NextRequest) {
       await prisma.settings.upsert({
         where: { key: 'show_spool_location' },
         create: { key: 'show_spool_location', value: String(enabled) },
+        update: { value: String(enabled) },
+      });
+      return NextResponse.json({ success: true });
+    }
+
+    if (type === 'show_printer_filament_report') {
+      const enabled = body.enabled === true;
+      await prisma.settings.upsert({
+        where: { key: 'show_printer_filament_report' },
+        create: { key: 'show_printer_filament_report', value: String(enabled) },
+        update: { value: String(enabled) },
+      });
+      return NextResponse.json({ success: true });
+    }
+
+    if (type === 'auto_mapping') {
+      const enabled = body.enabled === true;
+      await prisma.settings.upsert({
+        where: { key: 'auto_mapping_enabled' },
+        create: { key: 'auto_mapping_enabled', value: String(enabled) },
         update: { value: String(enabled) },
       });
       return NextResponse.json({ success: true });

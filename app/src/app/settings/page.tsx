@@ -80,6 +80,8 @@ function SettingsContent() {
 
   // Dashboard display settings
   const [showSpoolLocation, setShowSpoolLocation] = useState(false);
+  const [showPrinterFilamentReport, setShowPrinterFilamentReport] = useState(false);
+  const [autoMappingEnabled, setAutoMappingEnabled] = useState(true);
 
   // QR base URL state
   const [qrBaseUrl, setQrBaseUrl] = useState('');
@@ -163,6 +165,12 @@ function SettingsContent() {
       }
       if (data.showSpoolLocation !== undefined) {
         setShowSpoolLocation(data.showSpoolLocation);
+      }
+      if (data.showPrinterFilamentReport !== undefined) {
+        setShowPrinterFilamentReport(data.showPrinterFilamentReport);
+      }
+      if (data.autoMappingEnabled !== undefined) {
+        setAutoMappingEnabled(data.autoMappingEnabled);
       }
     } catch {
       toast.error('Failed to load settings');
@@ -855,6 +863,70 @@ function SettingsContent() {
                       </Label>
                       <p className="text-xs text-muted-foreground">
                         Display the Spoolman location field on each spool card (e.g., shelf, dry box, bin number)
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-3 mt-4">
+                    <Checkbox
+                      id="show-printer-filament-report"
+                      checked={showPrinterFilamentReport}
+                      onCheckedChange={async (checked) => {
+                        const enabled = checked === true;
+                        setShowPrinterFilamentReport(enabled);
+                        try {
+                          const res = await fetch('/api/settings', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ type: 'show_printer_filament_report', enabled }),
+                          });
+                          if (!res.ok) throw new Error();
+                          toast.success(
+                            enabled
+                              ? 'Printer-reported filament shown on dashboard'
+                              : 'Printer-reported filament hidden on dashboard',
+                          );
+                        } catch {
+                          setShowPrinterFilamentReport(!enabled);
+                          toast.error('Failed to save setting');
+                        }
+                      }}
+                    />
+                    <div>
+                      <Label htmlFor="show-printer-filament-report" className="text-sm font-medium cursor-pointer">
+                        Show printer-reported name, type, and color
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        On each tray card, show the filament name, material type, and color as reported by the printer (from Home Assistant), alongside Spoolman data
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-3 mt-4">
+                    <Checkbox
+                      id="auto-mapping"
+                      checked={autoMappingEnabled}
+                      onCheckedChange={async (checked) => {
+                        const enabled = checked === true;
+                        setAutoMappingEnabled(enabled);
+                        try {
+                          const res = await fetch('/api/settings', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ type: 'auto_mapping', enabled }),
+                          });
+                          if (!res.ok) throw new Error();
+                          toast.success(enabled ? 'Auto filament mapping enabled' : 'Auto filament mapping disabled');
+                        } catch {
+                          setAutoMappingEnabled(!enabled);
+                          toast.error('Failed to save setting');
+                        }
+                      }}
+                    />
+                    <div>
+                      <Label htmlFor="auto-mapping" className="text-sm font-medium cursor-pointer">
+                        Auto-create filament mappings
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        When you manually assign a spool to a tray that has no RFID tag, automatically remember this name/material/color combination for future auto-assignment
                       </p>
                     </div>
                   </div>

@@ -5,6 +5,7 @@ import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { spoolEvents, SPOOL_UPDATED, SpoolUpdateEvent } from '@/lib/events';
 import { createActivityLog } from '@/lib/activity-log';
 import { checkAndUpdateAlerts } from '@/lib/alerts';
+import { normalizeMappingFields } from '@/app/api/mappings/route';
 
 /**
  * Webhook endpoint for Home Assistant automations
@@ -230,7 +231,7 @@ export async function POST(request: NextRequest) {
 
     // Handle tray_change event - auto-assign spool by serial number or handle empty tray
     if (event === 'tray_change') {
-      const { tray_entity_id, tray_uuid, name, material } = body;
+      const { tray_entity_id, tray_uuid, name, material, color } = body;
       const spools = await client.getSpools();
 
       // Resolve entity_id to unique_id for matching and assignment
@@ -324,9 +325,88 @@ export async function POST(request: NextRequest) {
         }
       }
 
+      // Try filament mapping lookup (name+material+color -> spoolId)
+      if (name && material && color) {
+        const normalized = normalizeMappingFields(name, material, color);
+        const mapping = await prisma.filamentMapping.findUnique({
+          where: {
+            name_material_color: {
+              name: normalized.name,
+              material: normalized.material,
+              color: normalized.color,
+            },
+          },
+        });
+
+        if (mapping) {
+          const mappedSpool = spools.find(s => s.id === mapping.spoolId && !s.archived);
+          if (mappedSpool) {
+            await client.assignSpoolToTray(mappedSpool.id, trayUniqueId);
+
+            const updateEvent: SpoolUpdateEvent = {
+              type: 'assign',
+              spoolId: mappedSpool.id,
+              spoolName: mappedSpool.filament.name,
+              trayId: tray_entity_id,
+              timestamp: Date.now(),
+            };
+            spoolEvents.emit(SPOOL_UPDATED, updateEvent);
+
+            await createActivityLog({
+              type: 'spool_change',
+              message: `Auto-assigned spool #${mappedSpool.id} to ${tray_entity_id} (matched by filament mapping)`,
+              details: { spoolId: mappedSpool.id, trayId: tray_entity_id, matchedBy: 'filament_mapping', mapping: normalized },
+            });
+
+            return NextResponse.json({
+              status: 'success',
+              spool: mappedSpool,
+              matchedBy: 'filament_mapping',
+            });
+          }
+        }
+      }
+
+      // No auto-match — clear any previous assignment so the tray is not stuck on a wrong spool
+      // (e.g. user changed filament name/type/color on the printer and no mapping matches)
+      const jsonTrayNoMatch = JSON.stringify(trayUniqueId);
+      let assignedSpoolNoMatch = spools.find(s => s.extra?.['active_tray'] === jsonTrayNoMatch);
+      if (!assignedSpoolNoMatch) {
+        const jsonEntityNoMatch = JSON.stringify(tray_entity_id);
+        assignedSpoolNoMatch = spools.find(s => s.extra?.['active_tray'] === jsonEntityNoMatch);
+      }
+
+      let unassignedSpoolId: number | undefined;
+      if (assignedSpoolNoMatch) {
+        console.log(
+          `Tray ${tray_entity_id} reports filament with no matching spool; unassigning spool #${assignedSpoolNoMatch.id}`,
+        );
+        await client.unassignSpoolFromTray(assignedSpoolNoMatch.id);
+        unassignedSpoolId = assignedSpoolNoMatch.id;
+
+        const unassignEvent: SpoolUpdateEvent = {
+          type: 'unassign',
+          spoolId: assignedSpoolNoMatch.id,
+          spoolName: assignedSpoolNoMatch.filament.name,
+          trayId: tray_entity_id,
+          timestamp: Date.now(),
+        };
+        spoolEvents.emit(SPOOL_UPDATED, unassignEvent);
+
+        await createActivityLog({
+          type: 'spool_unassign',
+          message: `Auto-unassigned spool #${assignedSpoolNoMatch.id} from ${tray_entity_id} (printer report did not match RFID, mapping, or mapped spool missing)`,
+          details: {
+            spoolId: assignedSpoolNoMatch.id,
+            trayId: tray_entity_id,
+            reason: 'tray_change_no_match',
+          },
+        });
+      }
+
       // No auto-match - user needs to manually assign spool
       // Log what the printer detected for debugging
-      console.log(`Tray ${tray_entity_id} changed but no matching spool found. Printer reports: name="${name}", material="${material}", tray_uuid="${tray_uuid}"`);
+      console.log(`Tray ${tray_entity_id} changed but no matching spool found. Printer reports: name="${name}", material="${material}", color="${color}", tray_uuid="${tray_uuid}"`);
 
       // Log to activity log so users can see all tray changes in the webapp
       await createActivityLog({
@@ -334,8 +414,9 @@ export async function POST(request: NextRequest) {
         message: `Tray change detected: ${tray_entity_id} has filament but no matching spool`,
         details: {
           trayId: tray_entity_id,
-          printerReports: { name, material, tray_uuid },
+          printerReports: { name, material, color, tray_uuid },
           action: 'manual_assignment_required',
+          previousAssignmentCleared: Boolean(unassignedSpoolId),
         },
       });
 
@@ -350,7 +431,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         status: 'no_match',
         message: 'No spool assigned to this tray. Please assign a spool manually in SpoolmanSync.',
-        printerReports: { name, material, tray_uuid },
+        printerReports: { name, material, tray_uuid, color },
+        ...(unassignedSpoolId !== undefined && {
+          unassigned: true,
+          unassignedSpoolId,
+        }),
       });
     }
 

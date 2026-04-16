@@ -62,6 +62,19 @@ interface TraySlotProps {
   onUnassign?: (spoolId: number) => void;
   mismatch?: MismatchInfo;
   showLocation?: boolean;
+  /** Show name / material / color as reported by the printer (Home Assistant) */
+  showPrinterReport?: boolean;
+}
+
+function printerReportColorCss(color?: string): string | undefined {
+  if (!color?.trim()) return undefined;
+  const c = color.trim();
+  return c.startsWith('#') ? c : `#${c}`;
+}
+
+/** True when HA reports the literal empty slot (no filament loaded). */
+function isEmptyTraySentinelLabel(s: string | undefined): boolean {
+  return (s ?? '').trim().toLowerCase() === 'empty';
 }
 
 /**
@@ -102,7 +115,7 @@ function sortSpools(spools: Spool[], sortBy: SortBy): Spool[] {
   });
 }
 
-export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mismatch, showLocation }: TraySlotProps) {
+export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mismatch, showLocation, showPrinterReport }: TraySlotProps) {
   const [open, setOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string | null>>({});
   const [enabledFields, setEnabledFields] = useState<FilterField[]>([]);
@@ -176,6 +189,53 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
 
   const trayLabel = tray.is_external ? 'External' : `Tray ${tray.tray_number}`;
 
+  const printerReportsEmptySlot =
+    isEmptyTraySentinelLabel(tray.name) || isEmptyTraySentinelLabel(tray.material);
+
+  const showNameRow = Boolean(tray.name?.trim()) && !isEmptyTraySentinelLabel(tray.name);
+  const showTypeRow = Boolean(tray.material?.trim()) && !isEmptyTraySentinelLabel(tray.material);
+  const showColorRow = Boolean(tray.color?.trim());
+
+  const hasPrinterReportData =
+    !printerReportsEmptySlot && (showNameRow || showTypeRow || showColorRow);
+
+  const printerReportBlock =
+    showPrinterReport && hasPrinterReportData ? (
+      <div className="rounded-md bg-muted/40 border border-border/60 px-2 py-1.5 space-y-1 w-full">
+        <div className="text-[8px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Printer-reported info
+        </div>
+        {showNameRow && (
+          <div className="flex gap-1.5 text-[10px] leading-tight">
+            <span className="text-muted-foreground shrink-0 w-14">Name</span>
+            <span className="font-medium truncate min-w-0" title={tray.name}>
+              {tray.name}
+            </span>
+          </div>
+        )}
+        {showTypeRow && (
+          <div className="flex gap-1.5 text-[10px] leading-tight">
+            <span className="text-muted-foreground shrink-0 w-14">Type</span>
+            <span className="font-medium truncate min-w-0" title={tray.material}>
+              {tray.material}
+            </span>
+          </div>
+        )}
+        {showColorRow && (
+          <div className="flex gap-1.5 text-[10px] leading-tight items-center min-w-0">
+            <span className="text-muted-foreground shrink-0 w-14">Color</span>
+            <span
+              className="h-3.5 w-3.5 rounded-full border border-border shrink-0"
+              style={{ backgroundColor: printerReportColorCss(tray.color) }}
+            />
+            <span className="font-mono text-[9px] truncate min-w-0" title={tray.color}>
+              {tray.color}
+            </span>
+          </div>
+        )}
+      </div>
+    ) : null;
+
   // Check if any enabled filters have values to show
   const hasFilterOptions = enabledFields.some(f => f.values.length > 0);
 
@@ -242,6 +302,8 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
                 )}
               </div>
 
+              {printerReportBlock && <div className="w-full mt-1">{printerReportBlock}</div>}
+
               {/* Footer: spool ID and weight */}
               <div className="flex items-center justify-between mt-auto pt-1">
                 <span className="text-[10px] text-muted-foreground">
@@ -256,7 +318,8 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
             </>
           ) : (
             /* Empty tray state */
-            <div className="flex flex-col items-center justify-center flex-1 py-2">
+            <div className="flex flex-col items-center justify-center flex-1 py-2 w-full">
+              {printerReportBlock && <div className="w-full mb-2">{printerReportBlock}</div>}
               <div
                 className="h-8 w-8 rounded-full border-2 border-dashed border-muted-foreground/30 mb-2"
               />
