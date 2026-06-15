@@ -5,6 +5,11 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Filament usage was massively under-counted when the printer/MQTT connection briefly flickered mid-print. A transient `unavailable` blip on the active-tray sensor was misread as a tray change by the "Update Spool" automation, resetting the usage utility meter and discarding all filament tracked so far. Only filament used after the blip was deducted at print end (e.g. 2.3g logged for a 25.6g print). The tray trigger now ignores `unavailable`/`unknown` transitions (Bambu and Creality).
+
 ## [1.5.3] - 2026-04-19
 
 ### Fixed
