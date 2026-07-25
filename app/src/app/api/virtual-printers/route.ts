@@ -14,7 +14,7 @@ import {
 } from '@/lib/virtual-printers';
 import { SpoolmanClient } from '@/lib/api/spoolman';
 import { createActivityLog } from '@/lib/activity-log';
-import { isLocationSyncEnabled, makeLocationResolver, virtualLocationLabel } from '@/lib/spool-location';
+import { isLocationSyncEnabled, applyLocationSync, virtualLocationLabel } from '@/lib/spool-location';
 
 const MAX_SLOTS = 16;
 const MAX_NAME_LENGTH = 100;
@@ -23,9 +23,9 @@ async function getSpoolmanClient(): Promise<SpoolmanClient | null> {
   const conn = await prisma.spoolmanConnection.findFirst();
   if (!conn) return null;
   const client = new SpoolmanClient(conn.url);
-  // Wire location sync so slot/printer removal guard-clears the location field.
-  const locationResolver = await makeLocationResolver();
-  if (locationResolver) client.setLocationResolver(locationResolver);
+  // Wire location sync so slot/printer removal guard-clears the location field
+  // (or parks the spool in the configured holding pen).
+  await applyLocationSync(client);
   return client;
 }
 

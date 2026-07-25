@@ -11,6 +11,7 @@ import {
 } from '@/lib/api/homeassistant';
 import { createActivityLog } from '@/lib/activity-log';
 import { isWebhookAuthEnabled } from '@/lib/webhook-secret';
+import { UNASSIGNED_LOCATION_KEY, SPOOLMAN_LOCATION_MAX } from '@/lib/spool-location';
 
 export async function GET() {
   try {
@@ -51,6 +52,7 @@ export async function GET() {
       const showLocationSetting = await prisma.settings.findUnique({ where: { key: 'show_spool_location' } });
       const neverAutoClearSetting = await prisma.settings.findUnique({ where: { key: 'never_auto_clear_tray' } });
       const syncLocationSetting = await prisma.settings.findUnique({ where: { key: 'sync_spoolman_location' } });
+      const unassignedLocationSetting = await prisma.settings.findUnique({ where: { key: UNASSIGNED_LOCATION_KEY } });
       const webhookAuthEnabled = await isWebhookAuthEnabled();
 
       return NextResponse.json({
@@ -69,6 +71,7 @@ export async function GET() {
         showSpoolLocation: showLocationSetting?.value === 'true',
         neverAutoClearTray: neverAutoClearSetting?.value === 'true',
         syncSpoolmanLocation: syncLocationSetting?.value === 'true',
+        unassignedSpoolLocation: unassignedLocationSetting?.value ?? '',
         webhookConfigured: webhookAuthEnabled,
       });
     }
@@ -255,6 +258,7 @@ export async function GET() {
     const showLocationSetting = await prisma.settings.findUnique({ where: { key: 'show_spool_location' } });
     const neverAutoClearSetting = await prisma.settings.findUnique({ where: { key: 'never_auto_clear_tray' } });
     const syncLocationSetting = await prisma.settings.findUnique({ where: { key: 'sync_spoolman_location' } });
+    const unassignedLocationSetting = await prisma.settings.findUnique({ where: { key: UNASSIGNED_LOCATION_KEY } });
     const webhookAuthEnabled = await isWebhookAuthEnabled();
 
     return NextResponse.json({
@@ -269,6 +273,7 @@ export async function GET() {
       showSpoolLocation: showLocationSetting?.value === 'true',
       neverAutoClearTray: neverAutoClearSetting?.value === 'true',
       syncSpoolmanLocation: syncLocationSetting?.value === 'true',
+      unassignedSpoolLocation: unassignedLocationSetting?.value ?? '',
       webhookConfigured: webhookAuthEnabled,
     });
   } catch (error) {
@@ -364,6 +369,28 @@ export async function POST(request: NextRequest) {
         update: { value: String(enabled) },
       });
       return NextResponse.json({ success: true });
+    }
+
+    if (type === 'unassigned_spool_location') {
+      // Optional "holding pen": where an unassigned spool's location goes
+      // instead of being cleared. Empty (the default) keeps the clear behavior.
+      // Only consulted while sync_spoolman_location is on — see
+      // getUnassignedLocation() — so it is inert on its own.
+      // Require an explicit string so a malformed request can't silently wipe a
+      // configured holding pen; clearing it is `location: ''`.
+      if (typeof body.location !== 'string') {
+        return NextResponse.json(
+          { error: 'location must be a string (use an empty string to clear it)' },
+          { status: 400 }
+        );
+      }
+      const location = body.location.trim().slice(0, SPOOLMAN_LOCATION_MAX);
+      await prisma.settings.upsert({
+        where: { key: UNASSIGNED_LOCATION_KEY },
+        create: { key: UNASSIGNED_LOCATION_KEY, value: location },
+        update: { value: location },
+      });
+      return NextResponse.json({ success: true, location });
     }
 
     if (type === 'never_auto_clear_tray') {

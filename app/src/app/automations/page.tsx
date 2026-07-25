@@ -6,6 +6,7 @@ import { Nav } from '@/components/nav';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
   DialogContent,
@@ -21,12 +22,20 @@ interface PrinterRegistration {
   trayIds: string[];
 }
 
+interface MissingEntityReport {
+  prefix: string;
+  name: string;
+  missing: string[];
+  breaksUsageTracking: boolean;
+}
+
 interface AutomationData {
   trayCount: number;
   printerCount: number;
   automationsYaml: string;
   configurationYaml: string;
   printerRegistrations: PrinterRegistration[];
+  missingEntities?: MissingEntityReport[];
 }
 
 interface RegisteredAutomation {
@@ -35,6 +44,52 @@ interface RegisteredAutomation {
   trayId: string;
   printerId: string;
   createdAt: string;
+}
+
+/**
+ * Printer-level entities discovery couldn't find.
+ *
+ * A missing `print_weight` silently disables all weight deduction for that
+ * printer, so this has to be visible in EVERY deployment mode — add-on mode is
+ * the primary install path and never sees the generated YAML.
+ */
+function MissingEntitiesAlert({ reports }: { reports: MissingEntityReport[] }) {
+  if (reports.length === 0) return null;
+
+  return (
+    <Alert variant="destructive">
+      <AlertDescription>
+        <p className="font-medium">Some Home Assistant entities could not be found.</p>
+        <ul className="list-disc list-inside mt-2 space-y-1 text-sm">
+          {reports.map((report) => (
+            <li key={report.prefix}>
+              <strong>{report.name || report.prefix}</strong>: missing{' '}
+              <code>{report.missing.join(', ')}</code>
+              {report.breaksUsageTracking && (
+                <span className="block ml-5">
+                  Filament usage will <strong>not</strong> be deducted for this printer.
+                  Spool assignment and tray-change detection still work.
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+        <p className="mt-2 text-sm">
+          This usually means your printer or integration version doesn&apos;t expose these
+          sensors. Please{' '}
+          <a
+            href="https://github.com/gibz104/SpoolmanSync/issues"
+            target="_blank"
+            rel="noreferrer"
+            className="underline"
+          >
+            open an issue
+          </a>{' '}
+          with your printer model so support can be added.
+        </p>
+      </AlertDescription>
+    </Alert>
+  );
 }
 
 export default function AutomationsPage() {
@@ -53,6 +108,9 @@ export default function AutomationsPage() {
   const [webhookUrl, setWebhookUrl] = useState('');
   const [showRestartModal, setShowRestartModal] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  // Printer-level entities discovery couldn't find. Surfaced because a missing
+  // print_weight silently disables all weight deduction for that printer.
+  const [missingEntities, setMissingEntities] = useState<MissingEntityReport[]>([]);
 
   useEffect(() => {
     fetchRegistered();
@@ -116,6 +174,7 @@ export default function AutomationsPage() {
       }
 
       setConfigured(true);
+      setMissingEntities(data.missingEntities || []);
       fetchRegistered();
 
       if (data.needsRestart) {
@@ -182,6 +241,7 @@ export default function AutomationsPage() {
 
       const data = await res.json();
       setAutomationData(data);
+      setMissingEntities(data.missingEntities || []);
       toast.success(`Found ${data.trayCount} trays to monitor`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to generate config');
@@ -254,6 +314,8 @@ export default function AutomationsPage() {
           <h1 className="text-xl sm:text-2xl font-bold mb-6">Automations</h1>
 
           <div className="space-y-6">
+            <MissingEntitiesAlert reports={missingEntities} />
+
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -471,6 +533,8 @@ export default function AutomationsPage() {
             </CardContent>
           </Card>
 
+          <MissingEntitiesAlert reports={missingEntities} />
+
           {/* Generated Config */}
           {automationData && (
             <>
@@ -539,9 +603,22 @@ export default function AutomationsPage() {
                   <ol className="list-decimal list-inside space-y-2 text-sm">
                     <li>Copy the <strong>configuration.yaml</strong> content above and add it to your Home Assistant <code>configuration.yaml</code> file</li>
                     <li>Copy the <strong>automations.yaml</strong> content above and add it to your Home Assistant <code>automations.yaml</code> file</li>
-                    <li>Restart Home Assistant or reload automations</li>
+                    <li>
+                      <strong>Fully restart Home Assistant</strong> (Developer Tools → YAML → Restart Home Assistant,
+                      or Settings → System → Restart)
+                    </li>
                     <li>Click &quot;Mark as Configured&quot; below</li>
                   </ol>
+
+                  <Alert>
+                    <AlertDescription>
+                      A full restart is required — <strong>reloading automations is not enough</strong>. The
+                      <code className="mx-1">input_number</code>, <code className="mx-1">utility_meter</code>,
+                      <code className="mx-1">template</code> and <code className="mx-1">rest_command</code> entries
+                      above are only created on restart. Without it the automations load but no filament weight is
+                      ever deducted.
+                    </AlertDescription>
+                  </Alert>
 
                   <Button onClick={registerAutomations} disabled={loading}>
                     Mark as Configured

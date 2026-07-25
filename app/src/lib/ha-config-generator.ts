@@ -9,11 +9,28 @@
 
 import { HAPrinter } from './api/homeassistant';
 
+/**
+ * A printer-level entity SpoolmanSync needs but could not find in HA.
+ * Surfaced to the caller (and on to the UI / activity log) rather than only
+ * warned to stdout — a missing `print_weight` silently disables all weight
+ * deduction for that printer, which is otherwise indistinguishable from
+ * "everything is configured and nothing is printing".
+ */
+export interface MissingEntityReport {
+  prefix: string;
+  name: string;
+  /** Translation keys we looked for, e.g. ['print_weight', 'print_progress']. */
+  missing: string[];
+  /** True when the miss disables filament-usage deduction entirely. */
+  breaksUsageTracking: boolean;
+}
+
 export interface GeneratedConfig {
   automationsYaml: string;
   configurationAdditions: string;
   printerCount: number;
   trayCount: number;
+  missingEntities: MissingEntityReport[];
 }
 
 /**
@@ -52,16 +69,34 @@ export function generateHAConfig(
       configurationAdditions: '',
       printerCount: 0,
       trayCount: 0,
+      missingEntities: [],
     };
   }
 
   // Process each printer
   const printerConfigs: PrinterConfig[] = [];
   const automationsYamlParts: string[] = [];
+  const missingEntityReports: MissingEntityReport[] = [];
   let totalTrayCount = 0;
 
   for (const printer of printers) {
     const prefix = printer.prefix;
+
+    // A printer with no trays at all has nothing to track, and generating for it
+    // emits triggers with an empty entity_id list — which Home Assistant rejects,
+    // taking the other printers' automations in the same file down with it.
+    // discoverPrinters() synthesizes a slot for single-spool printers (#68) so
+    // this should be unreachable; guard anyway rather than emit invalid YAML.
+    if (collectTrays(printer).length === 0) {
+      console.warn(`[SpoolmanSync] Printer ${prefix} has no AMS trays or external spools; skipping config generation for it.`);
+      missingEntityReports.push({
+        prefix,
+        name: printer.name,
+        missing: ['tray/external spool entities'],
+        breaksUsageTracking: true,
+      });
+      continue;
+    }
 
     if (printer.brand === 'creality') {
       // Creality printer — different entity structure
@@ -76,6 +111,12 @@ export function generateHAConfig(
       }
       if (missingEntities.length > 0) {
         console.warn(`[SpoolmanSync] Missing entities for ${prefix}: ${missingEntities.join(', ')}. Please report at https://github.com/gibz104/SpoolmanSync/issues`);
+        missingEntityReports.push({
+          prefix,
+          name: printer.name,
+          missing: missingEntities,
+          breaksUsageTracking: !printer.used_material_entity,
+        });
       }
 
       const discoveredEntities: LocalizedEntities = {
@@ -107,6 +148,14 @@ export function generateHAConfig(
       }
       if (missingEntities.length > 0) {
         console.warn(`[SpoolmanSync] Missing entities for ${prefix}: ${missingEntities.join(', ')}. Please report at https://github.com/gibz104/SpoolmanSync/issues`);
+        missingEntityReports.push({
+          prefix,
+          name: printer.name,
+          missing: missingEntities,
+          // Usage is print_weight × print_progress — either one missing means
+          // no weight can ever be computed, so nothing is ever deducted.
+          breaksUsageTracking: !printer.print_weight_entity || !printer.print_progress_entity,
+        });
       }
 
       const discoveredEntities: LocalizedEntities = {
@@ -129,8 +178,11 @@ export function generateHAConfig(
   return {
     automationsYaml,
     configurationAdditions,
-    printerCount: printers.length,
+    // Printers actually configured — differs from printers.length only when one
+    // was skipped above for having no trays.
+    printerCount: printerConfigs.length,
     trayCount: totalTrayCount,
+    missingEntities: missingEntityReports,
   };
 }
 
@@ -209,6 +261,29 @@ function generateAutomationsYaml(
   // Build the tray_sensor lookup template
   const trayEntityLookup = buildTrayEntityLookup(allTrays);
 
+  // Print-end / offline triggers depend on the printer's stage entity. If it
+  // wasn't discovered, emitting `entity_id:` with nothing after it produces an
+  // invalid trigger and Home Assistant refuses to load the WHOLE automation —
+  // taking tray-change tracking down with it. Omit them instead: the automation
+  // still loads and tray-change flushes keep working.
+  const printerStateTriggers = entities.current_stage
+    ? `
+    - entity_id: ${entities.current_stage}
+      to:
+        - finished
+        - idle
+      id: print_end
+      trigger: state
+    - entity_id: ${entities.current_stage}
+      to:
+        - offline
+      id: offline
+      trigger: state`
+    : `
+    # NOTE: no print-stage entity was discovered for this printer, so the
+    # print-end and offline triggers are omitted. Usage is then only flushed on
+    # tray changes, never at print end.`;
+
   return `# =============================================================================
 # SpoolmanSync Automation: Track Spool Usage
 #
@@ -241,18 +316,7 @@ function generateAutomationsYaml(
       not_to:
         - unavailable
         - unknown
-      trigger: state
-    - entity_id: ${entities.current_stage}
-      to:
-        - finished
-        - idle
-      id: print_end
-      trigger: state
-    - entity_id: ${entities.current_stage}
-      to:
-        - offline
-      id: offline
-      trigger: state
+      trigger: state${printerStateTriggers}
   variables:
     # For tray trigger: get the old tray composite ID (what we're switching FROM)
     old_tray: |-
@@ -465,7 +529,9 @@ ${trayEntityIds.map(id => `        - ${id}`).join('\n')}
         name: "{{ name }}"
         material: "{{ material }}"
         color: "{{ color }}"
-        current_print_state: "{{ states('${entities.current_stage}') }}"
+        current_print_state: ${entities.current_stage
+          ? `"{{ states('${entities.current_stage}') }}"`
+          : `"unknown"  # no print-stage entity discovered`}
   mode: queued
   max: 10
 `;
@@ -488,6 +554,28 @@ function generateCrealityAutomationsYaml(
 ): string {
   const trayEntityIds = allTrays.map(t => t.entityId);
   const trayEntityLookup = buildTrayEntityLookup(allTrays);
+
+  // Same guard as the Bambu generator: a trigger with a blank entity_id makes
+  // Home Assistant reject the entire automation. Creality's stage entity is the
+  // printer's own print_status entity, so this is defensive rather than expected.
+  const printerStateTriggers = entities.current_stage
+    ? `
+    - entity_id: ${entities.current_stage}
+      to:
+        - completed
+        - idle
+      id: print_end
+      trigger: state
+    - entity_id: ${entities.current_stage}
+      to:
+        - 'off'
+        - offline
+      id: offline
+      trigger: state`
+    : `
+    # NOTE: no print-status entity was discovered for this printer, so the
+    # print-end and offline triggers are omitted. Usage is then only flushed on
+    # slot changes, never at print end.`;
 
   return `# =============================================================================
 # SpoolmanSync Automation: Track Spool Usage (Creality)
@@ -517,19 +605,7 @@ function generateCrealityAutomationsYaml(
       not_to:
         - unavailable
         - unknown
-      trigger: state
-    - entity_id: ${entities.current_stage}
-      to:
-        - completed
-        - idle
-      id: print_end
-      trigger: state
-    - entity_id: ${entities.current_stage}
-      to:
-        - 'off'
-        - offline
-      id: offline
-      trigger: state
+      trigger: state${printerStateTriggers}
   variables:
     old_tray: |-
       {% if trigger.id == 'tray' and trigger.from_state is not none and trigger.from_state.state not in [None, '', 'unknown', 'unavailable'] %}
@@ -726,7 +802,9 @@ ${trayEntityIds.map(id => `        - ${id}`).join('\n')}
         name: "{{ name }}"
         material: "{{ material }}"
         color: "{{ color }}"
-        current_print_state: "{{ states('${entities.current_stage}') }}"
+        current_print_state: ${entities.current_stage
+          ? `"{{ states('${entities.current_stage}') }}"`
+          : `"unknown"  # no print-stage entity discovered`}
   mode: queued
   max: 10
 `;
@@ -785,6 +863,31 @@ function buildActiveTrayDetection(allTrays: TrayInfo[], brand: 'bambu_lab' | 'cr
 }
 
 /**
+ * Placeholder for the filament-usage sensor when the entity it would be computed
+ * from doesn't exist in Home Assistant.
+ *
+ * The sensor is still declared so the utility_meter's `source:` resolves and the
+ * rest of the config loads unchanged, but it is permanently unavailable and says
+ * why — instead of a template that silently errors on every state change.
+ */
+function unavailableUsageSensor(prefix: string, missing: string[]): string {
+  return `      # ${prefix}: FILAMENT USAGE TRACKING IS DISABLED
+      #
+      # SpoolmanSync could not find this printer's ${missing.join(' / ')} entity in
+      # Home Assistant, and filament usage cannot be calculated without it. This
+      # sensor is intentionally unavailable so the rest of the config still loads;
+      # spool assignment and tray-change detection are unaffected, but no weight
+      # will be deducted from Spoolman.
+      #
+      # If your printer does expose an equivalent sensor, please report it at
+      # https://github.com/gibz104/SpoolmanSync/issues so it can be discovered.
+      - name: "SpoolmanSync ${prefix} Filament Usage"
+        unique_id: spoolmansync-${prefix}-filament-usage
+        state: "0"
+        availability: "{{ false }}"`;
+}
+
+/**
  * Generate configuration.yaml additions for all printers
  * Aggregates entries under single YAML top-level keys (no duplicate keys)
  */
@@ -819,28 +922,44 @@ function generateConfigurationAdditions(
     const activeTrayDetection = buildActiveTrayDetection(p.allTrays, p.brand);
     const availabilityEntities = p.allTrays.map(t => `'${t.entityId}'`);
 
-    // Filament usage sensor differs by brand
+    // Filament usage sensor differs by brand.
+    //
+    // IMPORTANT: never interpolate an empty entity_id here. When discovery can't
+    // find a printer-level entity it used to yield `states('')`, which produces a
+    // template that errors on every evaluation, leaves the sensor unavailable,
+    // and therefore leaves the utility_meter at 0 forever — so no usage webhook
+    // is ever sent, with no signal anywhere that this is what happened. We now
+    // emit an explicitly-unavailable sensor that names the missing entity.
     let filamentUsageSensor: string;
     if (p.brand === 'creality') {
       // Creality: used_material_length is a running total in cm
-      filamentUsageSensor = `      # ${p.prefix}: Track filament usage during print (Creality - cm)
+      filamentUsageSensor = p.discoveredEntities.used_material_length
+        ? `      # ${p.prefix}: Track filament usage during print (Creality - cm)
       - name: "SpoolmanSync ${p.prefix} Filament Usage"
         unique_id: spoolmansync-${p.prefix}-filament-usage
         unit_of_measurement: "cm"
         state: >
           {{ states('${p.discoveredEntities.used_material_length}') | float(0) }}
         availability: >
-          {{ states('${p.discoveredEntities.used_material_length}') not in ['unknown', 'unavailable'] }}`;
+          {{ states('${p.discoveredEntities.used_material_length}') not in ['unknown', 'unavailable'] }}`
+        : unavailableUsageSensor(p.prefix, ['used_material_length']);
     } else {
       // Bambu: calculate from print_weight * progress
-      filamentUsageSensor = `      # ${p.prefix}: Calculate filament usage during print
+      const missingForUsage = [
+        !p.discoveredEntities.print_weight ? 'print_weight' : null,
+        !p.discoveredEntities.print_progress ? 'print_progress' : null,
+      ].filter((v): v is string => v !== null);
+
+      filamentUsageSensor = missingForUsage.length === 0
+        ? `      # ${p.prefix}: Calculate filament usage during print
       - name: "SpoolmanSync ${p.prefix} Filament Usage"
         unique_id: spoolmansync-${p.prefix}-filament-usage
         state: >
           {{ states('${p.discoveredEntities.print_weight}') | float(0) / 100 *
              states('${p.discoveredEntities.print_progress}') | float(0) }}
         availability: >
-          {{ states('${p.discoveredEntities.print_weight}') not in ['unknown', 'unavailable'] }}`;
+          {{ states('${p.discoveredEntities.print_weight}') not in ['unknown', 'unavailable'] }}`
+        : unavailableUsageSensor(p.prefix, missingForUsage);
     }
 
     const unitLabel = p.brand === 'creality' ? 'CFS slot' : 'AMS tray';

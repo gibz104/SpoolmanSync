@@ -132,3 +132,97 @@ describe('unassignSpoolFromTray — guarded location clear', () => {
     expect('location' in body).toBe(false);
   });
 });
+
+/**
+ * Optional "holding pen": park an unassigned spool in a named location instead
+ * of clearing the field, so it stays visible in Spoolman's location views.
+ * Opt-in on top of an already opt-in feature — it must be inert unless BOTH
+ * location sync is on and a value is configured.
+ */
+describe('unassignSpoolFromTray — holding pen', () => {
+  const onTray = () => ({
+    id: 1,
+    extra: { active_tray: JSON.stringify('x1c_ABC_tray_3') },
+    location: 'X1C - AMS 1 Tray 3',
+  });
+  const trayResolver = async (key: string) =>
+    key === 'x1c_ABC_tray_3' ? 'X1C - AMS 1 Tray 3' : '';
+
+  it('parks the spool in the configured location instead of clearing', async () => {
+    const calls = installFetch(onTray());
+    const client = new SpoolmanClient('http://spoolman');
+    client.setLocationResolver(trayResolver);
+    client.setUnassignedLocation('Holding Pen');
+
+    await client.unassignSpoolFromTray(1);
+
+    expect(patchBody(calls)!.location).toBe('Holding Pen');
+  });
+
+  it('falls back to clearing when the value is empty or whitespace', async () => {
+    for (const value of ['', '   ']) {
+      const calls = installFetch(onTray());
+      const client = new SpoolmanClient('http://spoolman');
+      client.setLocationResolver(trayResolver);
+      client.setUnassignedLocation(value);
+
+      await client.unassignSpoolFromTray(1);
+
+      expect(patchBody(calls)!.location, `value=${JSON.stringify(value)}`).toBeNull();
+    }
+  });
+
+  it('is inert without a resolver — location sync off means location is untouched', async () => {
+    const calls = installFetch(onTray());
+    const client = new SpoolmanClient('http://spoolman');
+    client.setUnassignedLocation('Holding Pen');
+
+    await client.unassignSpoolFromTray(1);
+
+    expect('location' in patchBody(calls)!).toBe(false);
+  });
+
+  it('still never overwrites a location the user set by hand', async () => {
+    const calls = installFetch({ ...onTray(), location: 'My special shelf' });
+    const client = new SpoolmanClient('http://spoolman');
+    client.setLocationResolver(trayResolver);
+    client.setUnassignedLocation('Holding Pen');
+
+    await client.unassignSpoolFromTray(1);
+
+    expect('location' in patchBody(calls)!).toBe(false);
+  });
+
+  it('does not park a spool that has no location at all', async () => {
+    const calls = installFetch({ id: 1, extra: { active_tray: JSON.stringify('x1c_ABC_tray_3') } });
+    const client = new SpoolmanClient('http://spoolman');
+    client.setLocationResolver(trayResolver);
+    client.setUnassignedLocation('Holding Pen');
+
+    await client.unassignSpoolFromTray(1);
+
+    expect('location' in patchBody(calls)!).toBe(false);
+  });
+
+  it('trims and clamps the value to Spoolman\'s 64-char limit', async () => {
+    const calls = installFetch(onTray());
+    const client = new SpoolmanClient('http://spoolman');
+    client.setLocationResolver(trayResolver);
+    client.setUnassignedLocation(`  ${'P'.repeat(100)}  `);
+
+    await client.unassignSpoolFromTray(1);
+
+    expect(patchBody(calls)!.location).toBe('P'.repeat(64));
+  });
+
+  it('does not affect assignment — a spool moved to a tray gets the tray label', async () => {
+    const calls = installFetch({ id: 1, extra: {} });
+    const client = new SpoolmanClient('http://spoolman');
+    client.setLocationResolver(trayResolver);
+    client.setUnassignedLocation('Holding Pen');
+
+    await client.assignSpoolToTray(1, 'x1c_ABC_tray_3');
+
+    expect(patchBody(calls)!.location).toBe('X1C - AMS 1 Tray 3');
+  });
+});

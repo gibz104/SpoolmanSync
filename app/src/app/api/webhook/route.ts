@@ -7,7 +7,7 @@ import { createActivityLog } from '@/lib/activity-log';
 import { checkAndUpdateAlerts } from '@/lib/alerts';
 import { getWebhookSecret, isWebhookAuthEnabled, tokensMatch, WEBHOOK_TOKEN_HEADER } from '@/lib/webhook-secret';
 import { isValidTrayUuid, lengthToWeight, classifyTrayState, isActivePrintState } from '@/lib/webhook-helpers';
-import { makeLocationResolver } from '@/lib/spool-location';
+import { applyLocationSync } from '@/lib/spool-location';
 
 /**
  * Webhook endpoint for Home Assistant automations
@@ -82,8 +82,7 @@ export async function POST(request: NextRequest) {
     // Wire up location sync (no-op unless the user enabled it). When enabled,
     // auto-assign/auto-clear will also keep Spoolman's native location field in
     // step with the tray the spool is on.
-    const locationResolver = await makeLocationResolver();
-    if (locationResolver) client.setLocationResolver(locationResolver);
+    await applyLocationSync(client);
 
     // Handle spool_usage event - deduct filament weight from spool
     if (event === 'spool_usage') {
@@ -160,17 +159,15 @@ export async function POST(request: NextRequest) {
       // For Creality: rfid is a numeric RFID tag ID
       let tagStored = false;
       if (isValidTrayUuid(tray_uuid)) {
-        // Check if this spool already has this serial number stored
-        const existingTagRaw = matchedSpool.extra?.['tag'];
-        let alreadyHasTag = false;
-        if (existingTagRaw) {
-          try {
-            const parsed = JSON.parse(existingTagRaw);
-            alreadyHasTag = parsed === tray_uuid;
-          } catch {
-            // If parsing fails, assume tag not stored
-          }
-        }
+        // Rewrite unless the stored value is already byte-identical to what we
+        // would write. Matching is normalized elsewhere (see normalizeTag), but
+        // this check must stay exact: a tag that is normalized-equal yet stored
+        // in a different encoding still needs one canonicalizing write, because
+        // setSpoolTag is also what clears the same serial off any OTHER spool.
+        // Skipping the write on a normalized match would leave a duplicate
+        // serial in place permanently. After that single rewrite the stored form
+        // is canonical and this stops firing.
+        const alreadyHasTag = matchedSpool.extra?.['tag'] === JSON.stringify(tray_uuid);
 
         if (!alreadyHasTag) {
           console.log(`Storing spool serial "${tray_uuid}" on spool #${matchedSpool.id}`);
@@ -388,18 +385,42 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // No auto-match - user needs to manually assign spool
-      // Log what the printer detected for debugging
-      console.log(`Tray ${tray_entity_id} changed but no matching spool found. Printer reports: name="${name}", material="${material}", tray_uuid="${tray_uuid}"`);
+      // No serial auto-match. This is NOT the same as "no spool is assigned":
+      // the only lookup above is by RFID serial (extra.tag), which SpoolmanSync
+      // learns on a spool's first tracked print. A spool that is correctly
+      // assigned by hand but has never finished a print reaches this branch too,
+      // so the message must say what was actually checked — the old wording
+      // ("no matching spool") read as a contradiction of the dashboard.
+      const assignedSpool =
+        spools.find(s => s.extra?.['active_tray'] === JSON.stringify(trayUniqueId)) ??
+        spools.find(s => s.extra?.['active_tray'] === JSON.stringify(tray_entity_id));
+
+      const taggedSpoolCount = client.countTaggedSpools(spools);
+      const serialState = !isValidTrayUuid(tray_uuid)
+        ? 'no_serial_reported'
+        : taggedSpoolCount === 0
+          ? 'no_spools_have_serials_yet'
+          : 'serial_did_not_match_any_spool';
+
+      const message = assignedSpool
+        ? `Tray change detected: ${tray_entity_id} — spool #${assignedSpool.id} stays assigned (no RFID serial match)`
+        : `Tray change detected: ${tray_entity_id} has filament but no spool matches its RFID serial — assign one in SpoolmanSync`;
+
+      console.log(`${message}. Printer reports: name="${name}", material="${material}", tray_uuid="${tray_uuid}" (${serialState})`);
 
       // Log to activity log so users can see all tray changes in the webapp
       await createActivityLog({
         type: 'tray_change_detected',
-        message: `Tray change detected: ${tray_entity_id} has filament but no matching spool`,
+        message,
         details: {
           trayId: tray_entity_id,
           printerReports: { name, material, tray_uuid },
-          action: 'manual_assignment_required',
+          // Makes the "is this contradicting the dashboard?" question answerable
+          // straight from the log entry.
+          assignedSpoolId: assignedSpool?.id ?? null,
+          serialMatch: serialState,
+          taggedSpoolCount,
+          action: assignedSpool ? 'existing_assignment_kept' : 'manual_assignment_required',
         },
       });
 
@@ -413,7 +434,11 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         status: 'no_match',
-        message: 'No spool assigned to this tray. Please assign a spool manually in SpoolmanSync.',
+        message: assignedSpool
+          ? `No spool matched this tray's RFID serial; existing assignment (spool #${assignedSpool.id}) kept.`
+          : "No spool matched this tray's RFID serial. Assign a spool manually in SpoolmanSync.",
+        assignedSpoolId: assignedSpool?.id ?? null,
+        serialMatch: serialState,
         printerReports: { name, material, tray_uuid },
       });
     }

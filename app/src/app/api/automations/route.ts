@@ -5,12 +5,38 @@ import {
   generateHAConfig, mergeConfiguration, mergeAutomations,
   detectPackagesConfig, addPackagesDirective, addPackageEntry,
   stripSpoolmanSyncConfig, toPackageFileContent,
+  type MissingEntityReport,
 } from '@/lib/ha-config-generator';
 import { createActivityLog } from '@/lib/activity-log';
 import { getHiddenPrinters } from '@/app/api/printers/setup/route';
 import { getOrCreateWebhookSecret, enableWebhookAuth } from '@/lib/webhook-secret';
 import * as fs from 'fs/promises';
 
+
+/**
+ * Record any printer-level entities discovery couldn't find.
+ *
+ * Without this the only trace is a console.warn on the server, so a printer whose
+ * `print_weight` is missing looks identical to a healthy one right up until the
+ * user notices weight is never deducted. Writing it to the activity log puts it
+ * on the Logs page where it is actually findable.
+ */
+async function logMissingEntities(missing: MissingEntityReport[]): Promise<void> {
+  if (missing.length === 0) return;
+
+  const breaking = missing.filter(m => m.breaksUsageTracking);
+  const summary = missing
+    .map(m => `${m.name || m.prefix} (${m.missing.join(', ')})`)
+    .join('; ');
+
+  await createActivityLog({
+    type: 'error',
+    message: breaking.length > 0
+      ? `Filament usage tracking is disabled for ${breaking.length} printer(s) — required Home Assistant entities were not found: ${summary}`
+      : `Some Home Assistant entities were not found: ${summary}`,
+    details: { missingEntities: missing },
+  });
+}
 
 export async function GET() {
   try {
@@ -82,12 +108,15 @@ export async function POST(request: NextRequest) {
         ],
       }));
 
+      await logMissingEntities(config.missingEntities);
+
       return NextResponse.json({
         trayCount: config.trayCount,
         printerCount: config.printerCount,
         automationsYaml: config.automationsYaml,
         configurationYaml: config.configurationAdditions,
         printerRegistrations,
+        missingEntities: config.missingEntities,
       });
     }
 
@@ -380,11 +409,14 @@ export async function POST(request: NextRequest) {
           details: { printers: printers.map(p => p.name), trayIds: allTrayIds },
         });
 
+        await logMissingEntities(config.missingEntities);
+
         const addonMode = isAddonMode();
         return NextResponse.json({
           success: true,
           printerCount: config.printerCount,
           trayCount: config.trayCount,
+          missingEntities: config.missingEntities,
           needsRestart: addonMode,
           message: addonMode
             ? `Configuration written for ${config.printerCount} printer(s), ${config.trayCount} tray(s). Home Assistant restart required to apply changes.`

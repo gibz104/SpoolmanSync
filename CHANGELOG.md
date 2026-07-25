@@ -5,6 +5,21 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Optional "location when unassigned" holding pen. With location sync enabled, a spool removed from a tray normally has its Spoolman `location` cleared, which makes it disappear from Spoolman's location views until you remember to file it. You can now set a location — e.g. "Holding Pen" — that unassigned spools are parked in instead. The field appears under the "Sync spool locations to Spoolman" toggle and is empty by default, preserving the existing clear-on-unassign behavior; it has no effect at all unless location sync is on. A location you set by hand is still never overwritten.
+
+### Fixed
+- Spoolman location suggestions are no longer stale. The pick-list offered when creating a virtual printer was derived only from locations already written on spools, and counted archived spools. As a result, locations created in Spoolman didn't appear until a spool was moved into them, and deleted locations lingered indefinitely whenever an archived spool still carried the name. SpoolmanSync now reads Spoolman's own `locations` setting first (preserving your ordering) and then adds any additional locations found on non-archived spools — the same list Spoolman's Locations page builds — so the two always agree. The Settings page also refreshes the list when the tab regains focus.
+- Missing Home Assistant entities no longer fail silently. When a printer-level entity such as `print_weight` couldn't be discovered, the generated configuration contained `states('')` — a template that errors on every evaluation, leaving the filament-usage sensor dead, the utility meter at zero, and no usage webhook ever sent, with the only trace a warning on the server console. SpoolmanSync now generates an explicitly unavailable sensor that names the missing entity, reports the problem in the Automations page (in every deployment mode) and the activity log, and keeps spool assignment and tray-change detection working. A missing print-stage entity no longer emits a blank trigger `entity_id` for Bambu or Creality printers, which previously made Home Assistant reject the entire automation — including the tray-change tracking that was otherwise unaffected. A printer discovered with no trays or external spools at all is now skipped rather than emitting an automation with an empty trigger list that would fail to load alongside every other printer in the same file.
+- Spool serial (RFID / `tray_uuid`) auto-matching is no longer defeated by formatting. Matching required an exact match on the raw stored value, so a serial entered by hand in Spoolman — stored bare rather than JSON-encoded, or differing only in case or whitespace — never matched, and the resulting log entry claimed no matching spool existed. Comparison is now normalized on both sides, without coercing numeric-looking serials.
+- The tray-change log entry no longer claims "no matching spool" when a spool is assigned. That check only ever looked up the tray's RFID serial, never the tray assignment, so it fired for any correctly-assigned spool that hadn't yet completed a tracked print — appearing to contradict the dashboard. The entry now states what was actually checked and records whether a spool remains assigned.
+- Fixed two false positives in the dashboard's "possible wrong spool" warning: a Spoolman colour stored with a leading `#` was compared against a stripped RFID colour and always flagged, and material variants such as `PLA+` and `PLA_Basic` were flagged against the printer's `PLA`. Genuinely different materials, including compound ones such as `PLA-CF`, are still flagged.
+
+### Changed
+- External-mode setup instructions now require a full Home Assistant restart instead of offering "or reload automations". Reloading automations does not create the `input_number`, `utility_meter`, `template` and `rest_command` entries, which left tray-change detection working while filament usage was never deducted.
+
 ## [1.6.5] - 2026-07-11
 
 ### Added

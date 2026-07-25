@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 import { Nav } from '@/components/nav';
@@ -99,6 +99,11 @@ function SettingsContent() {
   // Sync behavior settings
   const [neverAutoClearTray, setNeverAutoClearTray] = useState(false);
   const [syncSpoolmanLocation, setSyncSpoolmanLocation] = useState(false);
+  // Optional "holding pen" for unassigned spools. Empty = clear the location
+  // (the original behavior). Only has any effect while location sync is on.
+  const [unassignedSpoolLocation, setUnassignedSpoolLocation] = useState('');
+  const [savedUnassignedLocation, setSavedUnassignedLocation] = useState('');
+  const seededUnassignedLocation = useRef(false);
 
   // QR base URL state
   const [qrBaseUrl, setQrBaseUrl] = useState('');
@@ -166,6 +171,22 @@ function SettingsContent() {
     }
   }, [settings?.spoolman]);
 
+  // Refresh the Spoolman location suggestions whenever this tab regains focus.
+  // Locations are managed in Spoolman, out of band from this app — without this
+  // the datalist stays frozen at whatever it was when the page mounted, so
+  // locations added or removed in another tab never show up.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible') fetchExistingLocations();
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, []);
+
   // Auto-refresh settings when in embedded mode and waiting for HA
   useEffect(() => {
     if (settings?.embeddedMode && !settings?.homeassistant && !loading) {
@@ -199,6 +220,16 @@ function SettingsContent() {
       }
       if (data.syncSpoolmanLocation !== undefined) {
         setSyncSpoolmanLocation(data.syncSpoolmanLocation);
+      }
+      // Seed once. fetchSettings() also runs on a 3s poll in embedded mode while
+      // HA finishes onboarding, and this is a controlled input saved on blur —
+      // re-seeding on every poll would wipe whatever is being typed before it
+      // could ever be saved. Nothing else writes this value, and
+      // saveUnassignedLocation() keeps both states current after a save.
+      if (data.unassignedSpoolLocation !== undefined && !seededUnassignedLocation.current) {
+        seededUnassignedLocation.current = true;
+        setUnassignedSpoolLocation(data.unassignedSpoolLocation);
+        setSavedUnassignedLocation(data.unassignedSpoolLocation);
       }
     } catch {
       toast.error('Failed to load settings');
@@ -508,9 +539,43 @@ function SettingsContent() {
     }
   };
 
+  /**
+   * Persist the holding-pen location on blur. No-op when nothing changed, so
+   * tabbing through the field doesn't spam the API or the user with toasts.
+   * Reverts the input on failure rather than leaving it showing an unsaved value.
+   */
+  const saveUnassignedLocation = async () => {
+    const location = unassignedSpoolLocation.trim();
+    if (location === savedUnassignedLocation) {
+      setUnassignedSpoolLocation(location); // normalize whitespace-only edits
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'unassigned_spool_location', location }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      const saved = typeof data.location === 'string' ? data.location : location;
+      setUnassignedSpoolLocation(saved);
+      setSavedUnassignedLocation(saved);
+      toast.success(
+        saved
+          ? `Unassigned spools will be moved to "${saved}"`
+          : 'Unassigned spools will have their location cleared'
+      );
+    } catch {
+      setUnassignedSpoolLocation(savedUnassignedLocation);
+      toast.error('Failed to save setting');
+    }
+  };
+
   const fetchExistingLocations = async () => {
     try {
-      const res = await fetch('/api/spoolman/locations');
+      const res = await fetch('/api/spoolman/locations', { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
         setExistingLocations(Array.isArray(data.locations) ? data.locations : []);
@@ -1287,6 +1352,35 @@ function SettingsContent() {
                       </p>
                     </div>
                   </div>
+
+                  {/* Holding pen — only meaningful while location sync is on, so
+                      it's nested under the toggle and hidden when it's off. */}
+                  {syncSpoolmanLocation && (
+                    <div className="ml-7 space-y-2">
+                      <Label htmlFor="unassigned-spool-location" className="text-sm font-medium">
+                        Location when unassigned
+                      </Label>
+                      <Input
+                        id="unassigned-spool-location"
+                        value={unassignedSpoolLocation}
+                        maxLength={64}
+                        placeholder="Leave empty to clear the location"
+                        className="max-w-sm"
+                        onChange={(e) => setUnassignedSpoolLocation(e.target.value)}
+                        onBlur={saveUnassignedLocation}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') e.currentTarget.blur();
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Optional. When a spool is removed from a tray, park it in this location
+                        instead of clearing the field — so it stays visible in Spoolman rather than
+                        disappearing until you remember to file it. Leave empty to keep the default
+                        behavior of clearing the location. As above, a location you set by hand is
+                        never overwritten.
+                      </p>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </>

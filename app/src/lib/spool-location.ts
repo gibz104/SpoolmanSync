@@ -20,16 +20,44 @@
 import prisma from '@/lib/db';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { getVirtualPrinters, virtualSlotKey } from '@/lib/virtual-printers';
-import type { LocationResolver } from '@/lib/api/spoolman';
+import {
+  SPOOLMAN_LOCATION_MAX,
+  type LocationResolver,
+  type Spool,
+  type SpoolmanClient,
+} from '@/lib/api/spoolman';
 
 /** Settings key for the opt-in toggle. */
 export const LOCATION_SYNC_KEY = 'sync_spoolman_location';
+/**
+ * Settings key for the optional "location when unassigned" holding pen.
+ *
+ * Empty (the default) keeps the original behavior of unsetting `location`. Only
+ * consulted when LOCATION_SYNC_KEY is on — SpoolmanSync never touches `location`
+ * at all otherwise, so this setting is inert on its own.
+ */
+export const UNASSIGNED_LOCATION_KEY = 'unassigned_spool_location';
 /** Spoolman's `location` field is `str | None` with max_length 64. */
-export const SPOOLMAN_LOCATION_MAX = 64;
+export { SPOOLMAN_LOCATION_MAX } from '@/lib/api/spoolman';
 
 export async function isLocationSyncEnabled(): Promise<boolean> {
   const s = await prisma.settings.findUnique({ where: { key: LOCATION_SYNC_KEY } });
   return s?.value === 'true';
+}
+
+/**
+ * The location to park a spool in when it is unassigned, or '' to clear the
+ * field as before.
+ *
+ * Gated on location sync being enabled so the value can never take effect on its
+ * own — a user who turns sync off gets the untouched-location behavior back
+ * without having to also clear this box.
+ */
+export async function getUnassignedLocation(): Promise<string> {
+  if (!(await isLocationSyncEnabled())) return '';
+  const s = await prisma.settings.findUnique({ where: { key: UNASSIGNED_LOCATION_KEY } });
+  const value = (s?.value ?? '').trim();
+  return value ? truncateLocation(value) : '';
 }
 
 /** Clamp any location string to Spoolman's 64-char limit. */
@@ -58,6 +86,50 @@ export function realTrayLocationLabel(
     label = `${name} - Tray ${trayNumber}`;
   }
   return truncateLocation(label);
+}
+
+/**
+ * Build the location suggestion list, mirroring how Spoolman's own Locations
+ * page builds its list: the user-managed `locations` setting first (in the
+ * user's order), then any extra locations found on non-archived spools.
+ *
+ * Both halves matter, and getting either wrong produced a visibly stale list:
+ *  - Without the setting, a location created in Spoolman is invisible here until
+ *    a spool is actually moved into it — so new locations appear "slowly".
+ *  - Counting archived spools keeps deleted locations alive forever, because
+ *    archiving a spool never clears its `location`. That is why deleting a
+ *    location worked for some entries and not others.
+ */
+export function buildLocationSuggestions(
+  configured: string[],
+  spools: Pick<Spool, 'location' | 'archived'>[],
+): string[] {
+  const locations: string[] = [];
+  const seen = new Set<string>();
+
+  const add = (raw: string | undefined | null) => {
+    const loc = (raw ?? '').trim();
+    if (!loc || seen.has(loc)) return;
+    seen.add(loc);
+    locations.push(loc);
+  };
+
+  // Spoolman's own ordering first — it is the order the user arranged.
+  configured.forEach(add);
+
+  // Then locations that only exist on spools, sorted so the tail of the list is
+  // stable rather than following whatever order Spoolman returned spools in.
+  const fromSpools = spools
+    // Defense-in-depth: Spoolman already omits archived spools unless asked,
+    // but an archived spool must never resurrect a location either way.
+    .filter(spool => !spool.archived)
+    .map(spool => (spool.location ?? '').trim())
+    .filter(location => location.length > 0)
+    .sort((a, b) => a.localeCompare(b));
+
+  fromSpools.forEach(add);
+
+  return locations;
 }
 
 /** Location label for a virtual printer (dry box / shelf) — just its name. */
@@ -130,4 +202,22 @@ export async function makeLocationResolver(): Promise<LocationResolver | null> {
     if (!cache) cache = await build();
     return cache.get(trayKey) ?? '';
   };
+}
+
+/**
+ * Wire location sync onto a SpoolmanClient. Single entry point for every caller
+ * that assigns or unassigns spools, so a new call site can't wire the resolver
+ * and silently forget the holding-pen setting (they must move together — the
+ * holding pen is only consulted when a resolver is present).
+ *
+ * No-op when location sync is disabled, leaving `location` untouched entirely.
+ * Returns whether sync is active, for callers that want to know.
+ */
+export async function applyLocationSync(client: SpoolmanClient): Promise<boolean> {
+  const resolver = await makeLocationResolver();
+  if (!resolver) return false;
+
+  client.setLocationResolver(resolver);
+  client.setUnassignedLocation(await getUnassignedLocation());
+  return true;
 }

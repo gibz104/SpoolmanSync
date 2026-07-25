@@ -69,6 +69,36 @@ export function parseExtraValue(value: string | undefined): string {
 }
 
 /**
+ * Normalize a spool serial / RFID tag for comparison.
+ *
+ * Values reach us from three places that don't agree on formatting:
+ *  - SpoolmanSync's own writes (`setSpoolTag`) — JSON-encoded, e.g. `"\"AB12\""`
+ *  - hand-edits in Spoolman's UI or via its API — may be stored bare, e.g. `AB12`
+ *  - ha-bambulab's `tray_uuid` attribute — casing is not guaranteed stable
+ *
+ * We unwrap the JSON encoding, then trim and case-fold, so a tag only fails to
+ * match when it genuinely differs. Comparing raw strings here silently broke
+ * auto-matching for anyone whose tag was entered by hand.
+ *
+ * Deliberately NOT parseExtraValue: that coerces any JSON value to a string, so
+ * an all-numeric serial stored bare would be read as a number and come back
+ * mangled ("1234...012" → "1.234...e+31", "1e5" → "100000"). A serial is always
+ * an opaque identifier, so we only unwrap when the JSON value is a string and
+ * otherwise keep the raw text exactly as written.
+ */
+export function normalizeTag(value: string | undefined | null): string {
+  if (!value) return '';
+  let unwrapped = value;
+  try {
+    const parsed = JSON.parse(value);
+    if (typeof parsed === 'string') unwrapped = parsed;
+  } catch {
+    // Not JSON — a bare, hand-entered value. Use it as-is.
+  }
+  return unwrapped.trim().toLowerCase();
+}
+
+/**
  * Build a searchable string from a spool object
  * Includes all fields for full-text search
  */
@@ -126,10 +156,19 @@ export type EntityIdResolver = (entityId: string) => Promise<string>;
  */
 export type LocationResolver = (trayKey: string) => Promise<string>;
 
+/**
+ * Spoolman's `location` field is `str | None` with max_length 64. Lives here
+ * (with the API client) rather than in spool-location.ts so this module can
+ * enforce it without importing the DB-backed settings layer, which would create
+ * a circular import.
+ */
+export const SPOOLMAN_LOCATION_MAX = 64;
+
 export class SpoolmanClient {
   private baseUrl: string;
   private entityIdResolver: EntityIdResolver | null = null;
   private locationResolver: LocationResolver | null = null;
+  private unassignedLocation = '';
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -156,6 +195,20 @@ export class SpoolmanClient {
    */
   setLocationResolver(resolver: LocationResolver): void {
     this.locationResolver = resolver;
+  }
+
+  /**
+   * Optional "holding pen": where a spool's `location` goes when it is
+   * unassigned, instead of being unset.
+   *
+   * Applies only inside the same guard as the clear — the location is replaced
+   * only when it still equals the label SpoolmanSync wrote for the tray being
+   * left, so a location set by hand is never overwritten. Has no effect unless
+   * a location resolver is also set (i.e. location sync is enabled), and an
+   * empty value keeps the original clear-on-unassign behavior.
+   */
+  setUnassignedLocation(location: string): void {
+    this.unassignedLocation = (location || '').trim();
   }
 
   /**
@@ -225,6 +278,34 @@ export class SpoolmanClient {
    */
   async getSpool(id: number): Promise<Spool> {
     return this.fetch(`/spool/${id}`);
+  }
+
+  /**
+   * Read Spoolman's user-managed location list.
+   *
+   * Spoolman keeps this in the `locations` *setting* (a JSON-encoded array of
+   * strings), NOT on the spools — see its Locations page, which reads the same
+   * setting. A location created there exists before any spool is moved into it,
+   * and deleting one removes it from the setting while leaving the string on
+   * whatever spools still sit in it.
+   *
+   * Returns [] on any failure. Older Spoolman versions have no such setting,
+   * and the caller falls back to locations derived from spools.
+   */
+  async getConfiguredLocations(): Promise<string[]> {
+    try {
+      const setting = await this.fetch<{ value?: unknown }>('/setting/locations');
+      if (typeof setting?.value !== 'string') return [];
+      const parsed = JSON.parse(setting.value);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((v): v is string => typeof v === 'string')
+        .map(v => v.trim())
+        .filter(v => v.length > 0);
+    } catch {
+      // Not fatal: pre-locations Spoolman (404) or a transient failure.
+      return [];
+    }
   }
 
   /**
@@ -314,7 +395,7 @@ export class SpoolmanClient {
 
     const body: Record<string, unknown> = { extra: await this.sanitizeExtra(newExtra) };
 
-    // GUARDED location clear: only wipe `location` if it still equals the label
+    // GUARDED location clear: only touch `location` if it still equals the label
     // we would have set for the tray being left. This means a location the user
     // set (or changed) by hand is never destroyed by an unassign.
     if (this.locationResolver && spool.location) {
@@ -327,8 +408,14 @@ export class SpoolmanClient {
       }
       if (oldTray) {
         const label = await this.locationResolver(oldTray);
-        // Spoolman's location is `str | None`; null truly unsets it.
-        if (label && label === spool.location) body.location = null;
+        if (label && label === spool.location) {
+          // With a holding pen configured, park the spool there so it stays
+          // visible in Spoolman's location views instead of vanishing from them.
+          // Otherwise null, which truly unsets Spoolman's `str | None` field.
+          body.location = this.unassignedLocation
+            ? this.unassignedLocation.slice(0, SPOOLMAN_LOCATION_MAX)
+            : null;
+        }
       }
     }
 
@@ -376,61 +463,53 @@ export class SpoolmanClient {
    */
   async clearDuplicateTags(trayUuid: string, exceptSpoolId: number): Promise<void> {
     const spools = await this.getSpools();
+    const target = normalizeTag(trayUuid);
+    if (!target) return;
 
     for (const spool of spools) {
       if (spool.id === exceptSpoolId) continue;
+      if (normalizeTag(spool.extra?.['tag']) !== target) continue;
 
-      const existingTagRaw = spool.extra?.['tag'];
-      if (!existingTagRaw) continue;
-
-      try {
-        const parsed = JSON.parse(existingTagRaw);
-        if (parsed === trayUuid) {
-          // Clear the tag from this spool
-          const newExtra: Record<string, string> = {};
-          if (spool.extra) {
-            for (const [key, value] of Object.entries(spool.extra)) {
-              if (key !== 'tag') {
-                newExtra[key] = value;
-              }
-            }
+      // Clear the tag from this spool
+      const newExtra: Record<string, string> = {};
+      if (spool.extra) {
+        for (const [key, value] of Object.entries(spool.extra)) {
+          if (key !== 'tag') {
+            newExtra[key] = value;
           }
-          newExtra['tag'] = JSON.stringify('');
-
-          await this.fetch<Spool>(`/spool/${spool.id}`, {
-            method: 'PATCH',
-            body: JSON.stringify({
-              extra: await this.sanitizeExtra(newExtra),
-            }),
-          });
         }
-      } catch {
-        // If parsing fails, skip this spool
       }
+      newExtra['tag'] = JSON.stringify('');
+
+      await this.fetch<Spool>(`/spool/${spool.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          extra: await this.sanitizeExtra(newExtra),
+        }),
+      });
     }
   }
 
   /**
-   * Find a spool by its serial number (tray_uuid)
+   * Find a spool by its serial number (tray_uuid).
+   * Comparison is normalized — see normalizeTag().
    */
   async findSpoolByTag(trayUuid: string): Promise<Spool | null> {
     const spools = await this.getSpools();
+    const target = normalizeTag(trayUuid);
+    if (!target) return null;
 
-    for (const spool of spools) {
-      const existingTagRaw = spool.extra?.['tag'];
-      if (!existingTagRaw) continue;
+    return spools.find(s => normalizeTag(s.extra?.['tag']) === target) ?? null;
+  }
 
-      try {
-        const parsed = JSON.parse(existingTagRaw);
-        if (parsed === trayUuid) {
-          return spool;
-        }
-      } catch {
-        // If parsing fails, skip this spool
-      }
-    }
-
-    return null;
+  /**
+   * Count spools that carry a non-empty serial/RFID tag. Used purely for
+   * diagnostics: it distinguishes "nothing is tagged yet" (expected before a
+   * spool's first tracked print) from "tags exist but none matched" (a real
+   * mismatch worth investigating).
+   */
+  countTaggedSpools(spools: Spool[]): number {
+    return spools.filter(s => normalizeTag(s.extra?.['tag']) !== '').length;
   }
 
   /**

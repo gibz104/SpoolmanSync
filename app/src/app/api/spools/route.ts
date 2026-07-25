@@ -3,7 +3,7 @@ import prisma from '@/lib/db';
 import { SpoolmanClient } from '@/lib/api/spoolman';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { createActivityLog } from '@/lib/activity-log';
-import { makeLocationResolver } from '@/lib/spool-location';
+import { applyLocationSync } from '@/lib/spool-location';
 
 export async function GET() {
   try {
@@ -62,8 +62,7 @@ export async function POST(request: NextRequest) {
 
     // Location sync (no-op unless enabled) — keep Spoolman's location field in
     // step with the tray this spool is being assigned to.
-    const locationResolver = await makeLocationResolver();
-    if (locationResolver) client.setLocationResolver(locationResolver);
+    await applyLocationSync(client);
 
     const updatedSpool = await client.assignSpoolToTray(spoolId, trayId);
 
@@ -112,10 +111,9 @@ export async function DELETE(request: NextRequest) {
       return deleteEntityIdMap.get(entityId) || entityId;
     });
 
-    // Location sync (no-op unless enabled) — the guarded clear in
-    // unassignSpoolFromTray only wipes location if we set it.
-    const locationResolver = await makeLocationResolver();
-    if (locationResolver) client.setLocationResolver(locationResolver);
+    // Location sync (no-op unless enabled) — the guarded clear/holding-pen write
+    // in unassignSpoolFromTray only applies if we set the location.
+    await applyLocationSync(client);
 
     const updatedSpool = await client.unassignSpoolFromTray(spoolId);
 
