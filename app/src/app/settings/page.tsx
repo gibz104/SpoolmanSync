@@ -147,6 +147,7 @@ function SettingsContent() {
         invalid_state: 'Invalid OAuth state - please try again',
         token_exchange_failed: 'Failed to exchange authorization code',
         oauth_failed: 'OAuth authentication failed',
+        ha_unreachable: 'The SpoolmanSync container could not reach Home Assistant. Your browser reaching it is not enough - check Docker networking and firewall rules.',
       };
       toast.error(errorMessages[error] || 'Authentication failed');
       window.history.replaceState({}, '', '/settings');

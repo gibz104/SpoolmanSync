@@ -1114,11 +1114,31 @@ export interface PackagesConfig {
 }
 
 /**
+ * Normalize lines for PARSING ONLY: strip a UTF-8 BOM from the first line and a
+ * trailing \r from every line.
+ *
+ * Real-world configuration.yaml files are frequently CRLF (edited on Windows
+ * over Samba) or carry a BOM. The parsing regexes here use `.` and `$`, neither
+ * of which tolerates a trailing \r — which made an existing
+ * `packages: !include_dir_named <dir>` line invisible and led auto-configure to
+ * insert a DUPLICATE packages: key, silently breaking the user's setup
+ * (issue #73). Indices into the returned array align 1:1 with the original
+ * lines, so callers parse the normalized copy and splice into the original.
+ */
+function normalizeConfigLines(lines: string[]): string[] {
+  return lines.map((line, i) => {
+    let normalized = i === 0 && line.charCodeAt(0) === 0xfeff ? line.slice(1) : line;
+    if (normalized.endsWith('\r')) normalized = normalized.slice(0, -1);
+    return normalized;
+  });
+}
+
+/**
  * Detect how packages are configured in configuration.yaml.
  * Parses as text (not YAML) since !include directives aren't standard YAML.
  */
 export function detectPackagesConfig(configContent: string): PackagesConfig {
-  const lines = configContent.split('\n');
+  const lines = normalizeConfigLines(configContent.split('\n'));
 
   // Find the homeassistant: block and packages: line within it
   let inHomeassistant = false;
@@ -1151,12 +1171,15 @@ export function detectPackagesConfig(configContent: string): PackagesConfig {
     const packagesIndent = currentIndent;
     const restOfLine = packagesMatch[1].trim();
 
-    // Style B: !include_dir_named or !include_dir_merge_named
-    const dirMatch = restOfLine.match(/^!include_dir_(?:named|merge_named)\s+(.+)$/);
+    // Style B: !include_dir_named or !include_dir_merge_named.
+    // Tolerate a trailing comment and surrounding quotes on the path — both are
+    // valid in HA configs, and capturing them verbatim previously sent the
+    // package file into a directory HA never loads.
+    const dirMatch = restOfLine.match(/^!include_dir_(?:named|merge_named)\s+([^#]+?)\s*(?:#.*)?$/);
     if (dirMatch) {
       return {
         style: 'directory',
-        directoryPath: dirMatch[1].trim(),
+        directoryPath: dirMatch[1].trim().replace(/^(['"])(.*)\1$/, '$2'),
       };
     }
 
@@ -1207,24 +1230,109 @@ export function detectPackagesConfig(configContent: string): PackagesConfig {
   return { style: 'none' };
 }
 
+/** The exact directive line SpoolmanSync inserts. Also matched by the repair helper. */
+export const SPOOLMANSYNC_PACKAGES_DIRECTIVE = '  packages: !include_dir_named packages';
+
+export interface AddDirectiveResult {
+  content: string;
+  /** Human-readable reason the directive was NOT added; null on success. */
+  conflict: string | null;
+}
+
 /**
  * Add `packages: !include_dir_named packages` under homeassistant: in configuration.yaml.
  * If homeassistant: doesn't exist, adds it at the top.
+ *
+ * REFUSES (returns a conflict instead of inserting) when the homeassistant:
+ * block already contains a packages: key in any form, or when homeassistant: has
+ * a scalar value (e.g. `homeassistant: !include x.yaml`) that a child key can't
+ * be nested under. Inserting anyway used to create a duplicate packages: key;
+ * YAML keeps the last one, so the SpoolmanSync package silently never loaded
+ * while every check reported success (issue #73). A loud failure the user can
+ * act on beats a silent misconfiguration.
  */
-export function addPackagesDirective(configContent: string): string {
-  const lines = configContent.split('\n');
+export function addPackagesDirective(configContent: string): AddDirectiveResult {
+  const rawLines = configContent.split('\n');
+  const lines = normalizeConfigLines(rawLines);
 
-  // Find homeassistant: line
   for (let i = 0; i < lines.length; i++) {
-    if (/^homeassistant\s*:/.test(lines[i].trimStart()) && (lines[i].length - lines[i].trimStart().length) === 0) {
-      // Insert packages directive after homeassistant: line
-      lines.splice(i + 1, 0, '  packages: !include_dir_named packages');
-      return lines.join('\n');
+    const trimmed = lines[i].trimStart();
+    const match = trimmed.match(/^homeassistant\s*:(.*)$/);
+    if (!match || (lines[i].length - trimmed.length) !== 0) continue;
+
+    const value = match[1].replace(/#.*$/, '').trim();
+    if (value) {
+      return {
+        content: configContent,
+        conflict: `configuration.yaml has "homeassistant: ${value}" — its settings live in another file, so SpoolmanSync cannot add a packages entry under it automatically`,
+      };
     }
+
+    // Scan the homeassistant: block for an existing packages: key.
+    for (let j = i + 1; j < lines.length; j++) {
+      const blockTrimmed = lines[j].trimStart();
+      const blockIndent = lines[j].length - blockTrimmed.length;
+      if (blockTrimmed && !blockTrimmed.startsWith('#') && blockIndent === 0) break; // left the block
+      if (/^packages\s*:/.test(blockTrimmed)) {
+        return {
+          content: configContent,
+          conflict: 'configuration.yaml already has a packages: entry under homeassistant: that SpoolmanSync could not use',
+        };
+      }
+    }
+
+    // Insert packages directive after homeassistant: line
+    rawLines.splice(i + 1, 0, SPOOLMANSYNC_PACKAGES_DIRECTIVE);
+    return { content: rawLines.join('\n'), conflict: null };
   }
 
   // No homeassistant: key found — add it at the top
-  return 'homeassistant:\n  packages: !include_dir_named packages\n\n' + configContent;
+  return {
+    content: `homeassistant:\n${SPOOLMANSYNC_PACKAGES_DIRECTIVE}\n\n` + configContent,
+    conflict: null,
+  };
+}
+
+/**
+ * Repair the broken state issue #73 left behind: a SpoolmanSync-inserted
+ * packages: directive sitting in the same homeassistant: block as the user's
+ * own packages: line (duplicate key; YAML keeps the user's, ours never loads).
+ *
+ * Deliberately narrow: removes ONLY the exact literal SpoolmanSync inserts, and
+ * only when at least one OTHER packages: line exists in the same block. A lone
+ * packages: line is never touched, whoever wrote it.
+ */
+export function repairDuplicatePackagesDirective(configContent: string): { content: string; repaired: boolean } {
+  const rawLines = configContent.split('\n');
+  const lines = normalizeConfigLines(rawLines);
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trimStart();
+    if (!/^homeassistant\s*:/.test(trimmed) || (lines[i].length - trimmed.length) !== 0) continue;
+
+    const ourLineIndexes: number[] = [];
+    let otherPackagesLines = 0;
+    for (let j = i + 1; j < lines.length; j++) {
+      const blockTrimmed = lines[j].trimStart();
+      const blockIndent = lines[j].length - blockTrimmed.length;
+      if (blockTrimmed && !blockTrimmed.startsWith('#') && blockIndent === 0) break;
+      if (!/^packages\s*:/.test(blockTrimmed)) continue;
+      if (lines[j] === SPOOLMANSYNC_PACKAGES_DIRECTIVE) {
+        ourLineIndexes.push(j);
+      } else {
+        otherPackagesLines++;
+      }
+    }
+
+    if (ourLineIndexes.length > 0 && otherPackagesLines > 0) {
+      for (let k = ourLineIndexes.length - 1; k >= 0; k--) {
+        rawLines.splice(ourLineIndexes[k], 1);
+      }
+      return { content: rawLines.join('\n'), repaired: true };
+    }
+  }
+
+  return { content: configContent, repaired: false };
 }
 
 /**

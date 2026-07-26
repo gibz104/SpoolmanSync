@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { createActivityLog } from '@/lib/activity-log';
+import { isNetworkError } from '@/lib/network-error';
 
 /**
  * Get the base URL for redirects from the request.
@@ -112,6 +113,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL('/settings?success=ha_connected', baseUrl));
   } catch (error) {
     console.error('OAuth callback error:', error);
+    // A network-level failure means OUR SERVER couldn't reach HA (the browser
+    // already could, or the user would never have gotten this far). Surfacing
+    // that as "OAuth failed" sent users down an auth-debugging rabbit hole when
+    // the actual problem was container networking (issue #74).
+    if (isNetworkError(error)) {
+      return NextResponse.redirect(new URL('/settings?error=ha_unreachable', baseUrl));
+    }
     return NextResponse.redirect(new URL('/settings?error=oauth_failed', baseUrl));
   }
 }

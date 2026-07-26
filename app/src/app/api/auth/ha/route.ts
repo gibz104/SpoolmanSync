@@ -42,6 +42,23 @@ export async function GET(request: NextRequest) {
   // Remove trailing slashes to prevent double-slash URLs
   haUrl = haUrl.replace(/\/+$/, '');
 
+  // Pre-flight: confirm OUR SERVER can reach HA before sending the user
+  // through the login flow. The browser reaching HA proves nothing about the
+  // container (issue #74: Docker networking broke, and the failure only
+  // surfaced after login as a baffling "OAuth authentication failed"). Any HTTP
+  // response counts as reachable — an unauthenticated /api/ call returning 401
+  // is exactly what a healthy HA does.
+  try {
+    await fetch(`${haUrl}/api/`, { signal: AbortSignal.timeout(5000) });
+  } catch (err) {
+    console.error(`[OAuth] Pre-flight to ${haUrl} failed:`, err);
+    return NextResponse.json({
+      error: `SpoolmanSync's server cannot reach Home Assistant at ${haUrl}. ` +
+        'Your browser reaching it is not enough — the SpoolmanSync container itself needs network access to this address. ' +
+        'Check Docker networking, firewall rules, and that the URL is reachable from inside the container.',
+    }, { status: 400 });
+  }
+
   // Generate a random state for CSRF protection
   const state = crypto.randomUUID();
 
