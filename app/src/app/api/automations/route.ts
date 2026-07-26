@@ -315,10 +315,14 @@ export async function POST(request: NextRequest) {
             // exists (issue #73) — a loud error beats a silently broken setup.
             const directiveResult = addPackagesDirective(finalConfig);
             if (directiveResult.conflict) {
-              try { await fs.unlink(packageFilePath); } catch { /* ignore */ }
+              // Deliberately do NOT delete the package file that was just
+              // written: it is inert unless something includes it, and in
+              // split configs (homeassistant: !include ...) this exact path
+              // may already be loaded via an include this tool cannot see —
+              // deleting it would break a working setup.
               return NextResponse.json({
                 error: `Cannot configure automatically: ${directiveResult.conflict}. ` +
-                  'Please add "spoolmansync: !include spoolmansync_package.yaml" style loading yourself, ' +
+                  `The package file was written to ${packageFilePath}; make sure your packages configuration loads that folder, ` +
                   'or share your configuration.yaml formatting at https://github.com/gibz104/SpoolmanSync/issues so detection can be improved.',
               }, { status: 400 });
             }
@@ -329,11 +333,12 @@ export async function POST(request: NextRequest) {
             const withEntry = addPackageEntry(finalConfig, packagesConfig);
             if (withEntry === finalConfig) {
               // The entry could not be placed — refuse loudly instead of
-              // reporting success with a package HA will never load.
-              try { await fs.unlink(packageFilePath); } catch { /* ignore */ }
+              // reporting success with a package HA will never load. The
+              // written package file is left in place (inert until included).
               return NextResponse.json({
                 error: 'Cannot configure automatically: configuration.yaml has a packages: block SpoolmanSync could not add an entry to. ' +
-                  'Please share your configuration.yaml formatting at https://github.com/gibz104/SpoolmanSync/issues so detection can be improved.',
+                  `The package file was written to ${packageFilePath}; add "spoolmansync: !include spoolmansync_package.yaml" under your packages: block yourself, ` +
+                  'or share your configuration.yaml formatting at https://github.com/gibz104/SpoolmanSync/issues so detection can be improved.',
               }, { status: 400 });
             }
             finalConfig = withEntry;

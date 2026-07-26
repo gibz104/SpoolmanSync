@@ -57,6 +57,41 @@ describe('detectPackagesConfig', () => {
     expect(detectPackagesConfig(config)).toEqual({ style: 'directory', directoryPath: 'my_packages' });
   });
 
+  it('normalizes "./" prefixes and trailing slashes in the directory path', () => {
+    // 'packages/', './packages' and 'packages' are the same directory; the
+    // spelling must not leak into paths that other code compares byte-wise
+    // (the orphan-cleanup unlink would otherwise delete a freshly written
+    // package file it believed lived elsewhere).
+    expect(detectPackagesConfig('homeassistant:\n  packages: !include_dir_named packages/\n'))
+      .toEqual({ style: 'directory', directoryPath: 'packages' });
+    expect(detectPackagesConfig('homeassistant:\n  packages: !include_dir_named ./packages\n'))
+      .toEqual({ style: 'directory', directoryPath: 'packages' });
+    expect(detectPackagesConfig('homeassistant:\n  packages: !include_dir_named ./integrations/\n'))
+      .toEqual({ style: 'directory', directoryPath: 'integrations' });
+  });
+
+  it('uses the observed entry indentation for named style, not an assumed one', () => {
+    const config = [
+      'homeassistant:',
+      '  packages:',
+      '      pack1: !include pack1.yaml', // 6-space entries under 2-space packages
+    ].join('\n');
+    expect(detectPackagesConfig(config)).toMatchObject({
+      style: 'named',
+      entryIndent: '      ',
+      hasSpoolmansync: false,
+    });
+  });
+
+  it('falls back to packages-indent+2 for an empty named block with a value-less line kept as named', () => {
+    const config = [
+      'homeassistant:',
+      '  packages:',
+      '    pack1: !include pack1.yaml',
+    ].join('\n');
+    expect(detectPackagesConfig(config)).toMatchObject({ style: 'named', entryIndent: '    ' });
+  });
+
   it('strips surrounding quotes from the directory path', () => {
     expect(detectPackagesConfig('homeassistant:\n  packages: !include_dir_named "integrations"\n'))
       .toEqual({ style: 'directory', directoryPath: 'integrations' });

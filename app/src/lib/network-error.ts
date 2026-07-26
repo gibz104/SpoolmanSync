@@ -38,3 +38,26 @@ export function isNetworkError(err: unknown): boolean {
   }
   return false;
 }
+
+/**
+ * True when the error is a timeout (e.g. an AbortSignal.timeout() rejection)
+ * rather than an affirmative can't-connect failure.
+ *
+ * The distinction matters for pre-flight checks: connection-refused or DNS
+ * failure proves the host is unreachable, but a timeout can just mean the host
+ * is slow (HA mid-startup, a Pi under recorder load). Treating a timeout as
+ * proof of unreachability blocked setups that worked fine before.
+ */
+export function isTimeoutError(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; current && depth < 5; depth++) {
+    if (typeof current === 'object') {
+      if ((current as { name?: unknown }).name === 'TimeoutError') return true;
+      if ((current as { code?: unknown }).code === 'ETIMEDOUT') return true;
+      current = (current as { cause?: unknown }).cause;
+    } else {
+      break;
+    }
+  }
+  return false;
+}

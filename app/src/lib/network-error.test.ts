@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isNetworkError } from './network-error';
+import { isNetworkError, isTimeoutError } from './network-error';
 
 /**
  * Classification behind the ha_unreachable error (issue #74): a container that
@@ -57,5 +57,41 @@ describe('isNetworkError', () => {
     const b: Record<string, unknown> = { message: 'b', cause: a };
     a.cause = b;
     expect(isNetworkError(a)).toBe(false);
+  });
+
+  it('does NOT classify TLS trust errors as network (the host WAS reached)', () => {
+    for (const code of [
+      'DEPTH_ZERO_SELF_SIGNED_CERT',
+      'SELF_SIGNED_CERT_IN_CHAIN',
+      'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+      'CERT_HAS_EXPIRED',
+      'ERR_TLS_CERT_ALTNAME_INVALID',
+    ]) {
+      expect(isNetworkError(withCause(code)), code).toBe(false);
+    }
+  });
+});
+
+describe('isTimeoutError', () => {
+  it('classifies AbortSignal.timeout rejections', () => {
+    const err = Object.assign(new Error('aborted'), { name: 'TimeoutError' });
+    expect(isTimeoutError(err)).toBe(true);
+  });
+
+  it('classifies ETIMEDOUT, including nested', () => {
+    const inner = Object.assign(new Error('t'), { code: 'ETIMEDOUT' });
+    expect(isTimeoutError(inner)).toBe(true);
+    expect(isTimeoutError(Object.assign(new TypeError('fetch failed'), { cause: inner }))).toBe(true);
+  });
+
+  it('does NOT classify affirmative connection failures as timeouts', () => {
+    // These prove unreachability and must remain blockable in pre-flight
+    // checks; only genuine timeouts are advisory.
+    for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT']) {
+      const inner = Object.assign(new Error('x'), { code });
+      const err = Object.assign(new TypeError('fetch failed'), { cause: inner });
+      expect(isTimeoutError(err), code).toBe(false);
+    }
+    expect(isTimeoutError(new Error('plain'))).toBe(false);
   });
 });

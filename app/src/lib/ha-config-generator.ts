@@ -1193,18 +1193,26 @@ export function detectPackagesConfig(configContent: string): PackagesConfig {
     // package file into a directory HA never loads.
     const dirMatch = restOfLine.match(/^!include_dir_(?:named|merge_named)\s+([^#]+?)\s*(?:#.*)?$/);
     if (dirMatch) {
-      return {
-        style: 'directory',
-        directoryPath: dirMatch[1].trim().replace(/^(['"])(.*)\1$/, '$2'),
-      };
+      // Normalize the spelling: strip quotes, a leading './' and trailing
+      // slashes. 'packages/', './packages' and 'packages' are the same
+      // directory, and callers compare the resulting file path against other
+      // paths — a cosmetic spelling difference must not defeat that.
+      const directoryPath = dirMatch[1]
+        .trim()
+        .replace(/^(['"])(.*)\1$/, '$2')
+        .replace(/^\.\//, '')
+        .replace(/\/+$/, '');
+      return { style: 'directory', directoryPath };
     }
 
     // Style C (or A with no value): named entries on subsequent lines
     // Scan forward to find entries and the end of the packages block
-    const entryIndentLevel = packagesIndent + 2;
-    const entryIndent = ' '.repeat(entryIndentLevel);
     let lastEntryEndIndex = i; // default: right after packages: line
     let hasSpoolmansync = false;
+    // Match the indentation of the entries that actually exist — assuming
+    // packagesIndent+2 misindents the inserted entry (and breaks the YAML)
+    // for configs indented with 4 spaces or tabs.
+    let observedEntryIndent: string | null = null;
 
     for (let j = i + 1; j < lines.length; j++) {
       const entryLine = lines[j];
@@ -1223,12 +1231,17 @@ export function detectPackagesConfig(configContent: string): PackagesConfig {
 
       // This line is inside the packages block
       lastEntryEndIndex = j;
+      if (observedEntryIndent === null) {
+        observedEntryIndent = entryLine.slice(0, entryCurrentIndent);
+      }
 
       // Check for existing spoolmansync entry
       if (entryTrimmed.startsWith('spoolmansync:') || entryTrimmed.startsWith('spoolmansync :')) {
         hasSpoolmansync = true;
       }
     }
+
+    const entryIndent = observedEntryIndent ?? ' '.repeat(packagesIndent + 2);
 
     // If rest of line is empty and no entries found → treat as 'none' (empty packages block)
     if (!restOfLine && lastEntryEndIndex === i) {

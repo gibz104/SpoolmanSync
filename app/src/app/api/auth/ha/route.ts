@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
+import { isNetworkError, isTimeoutError } from '@/lib/network-error';
 
 /**
  * Get the base URL for OAuth callbacks from the request.
@@ -45,18 +46,36 @@ export async function GET(request: NextRequest) {
   // Pre-flight: confirm OUR SERVER can reach HA before sending the user
   // through the login flow. The browser reaching HA proves nothing about the
   // container (issue #74: Docker networking broke, and the failure only
-  // surfaced after login as a baffling "OAuth authentication failed"). Any HTTP
-  // response counts as reachable — an unauthenticated /api/ call returning 401
-  // is exactly what a healthy HA does.
+  // surfaced after login as a baffling "OAuth authentication failed").
+  //
+  // This check must only ever block on PROOF of unreachability
+  // (connection refused, DNS failure, host unreachable):
+  //  - Any HTTP response counts as reachable — a healthy HA returns 401 to an
+  //    unauthenticated /api/ call, and an auth proxy may return 401/403/3xx.
+  //    redirect 'manual' so a proxy's redirect target never has to resolve
+  //    from inside the container.
+  //  - A TIMEOUT is not proof: HA mid-startup or under recorder load can take
+  //    longer than any sane pre-flight budget. Proceed and let the flow fail
+  //    later (as it always did) if the host truly never answers.
+  //  - Any OTHER failure (TLS trust, odd URLs) proceeds too, preserving the
+  //    exact pre-existing behavior for those setups. Blocking here with a
+  //    networking message would misdiagnose them.
+  // 12s outer budget: undici's own TCP connect timeout (~10s) must fire first,
+  // so a silent-drop firewall surfaces as UND_ERR_CONNECT_TIMEOUT (a blockable
+  // network error) rather than being masked by our outer TimeoutError.
   try {
-    await fetch(`${haUrl}/api/`, { signal: AbortSignal.timeout(5000) });
+    await fetch(`${haUrl}/api/`, { redirect: 'manual', signal: AbortSignal.timeout(12000) });
   } catch (err) {
-    console.error(`[OAuth] Pre-flight to ${haUrl} failed:`, err);
-    return NextResponse.json({
-      error: `SpoolmanSync's server cannot reach Home Assistant at ${haUrl}. ` +
-        'Your browser reaching it is not enough — the SpoolmanSync container itself needs network access to this address. ' +
-        'Check Docker networking, firewall rules, and that the URL is reachable from inside the container.',
-    }, { status: 400 });
+    if (isNetworkError(err) && !isTimeoutError(err)) {
+      console.error(`[OAuth] Pre-flight to ${haUrl} failed (network):`, err);
+      return NextResponse.json({
+        error: `SpoolmanSync's server cannot reach Home Assistant at ${haUrl}. ` +
+          'Your browser reaching it is not enough — the SpoolmanSync server itself needs network access to this address. ' +
+          'Check Docker networking, firewall rules, and that the URL is reachable from inside the container.',
+      }, { status: 400 });
+    }
+    // Timeout, TLS, or anything else: log and continue with the normal flow.
+    console.warn(`[OAuth] Pre-flight to ${haUrl} inconclusive, continuing:`, err);
   }
 
   // Generate a random state for CSRF protection
