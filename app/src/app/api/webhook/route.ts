@@ -402,11 +402,15 @@ export async function POST(request: NextRequest) {
           ? 'no_spools_have_serials_yet'
           : 'serial_did_not_match_any_spool';
 
+      // Keep RFID/serial language out of the visible message: non-Bambu spools
+      // have no serial at all, so "no serial match" reads as a failure where
+      // nothing was even attempted. The serialMatch field in details carries
+      // the distinction for debugging.
       const message = assignedSpool
-        ? `Tray change detected: ${tray_entity_id} — spool #${assignedSpool.id} stays assigned (no RFID serial match)`
-        : `Tray change detected: ${tray_entity_id} has filament but no spool matches its RFID serial — assign one in SpoolmanSync`;
+        ? `Tray change: ${tray_entity_id}; spool #${assignedSpool.id} remains assigned.`
+        : `Tray change: ${tray_entity_id} has filament but no spool is assigned. Assign a spool in SpoolmanSync to track usage.`;
 
-      console.log(`${message}. Printer reports: name="${name}", material="${material}", tray_uuid="${tray_uuid}" (${serialState})`);
+      console.log(`${message} Printer reports: name="${name}", material="${material}", tray_uuid="${tray_uuid}" (${serialState})`);
 
       // Log to activity log so users can see all tray changes in the webapp
       await createActivityLog({
@@ -435,8 +439,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         status: 'no_match',
         message: assignedSpool
-          ? `No spool matched this tray's RFID serial; existing assignment (spool #${assignedSpool.id}) kept.`
-          : "No spool matched this tray's RFID serial. Assign a spool manually in SpoolmanSync.",
+          ? `Spool #${assignedSpool.id} remains assigned to this tray.`
+          : 'No spool is assigned to this tray. Assign a spool in SpoolmanSync to track usage.',
         assignedSpoolId: assignedSpool?.id ?? null,
         serialMatch: serialState,
         printerReports: { name, material, tray_uuid },
