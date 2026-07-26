@@ -149,3 +149,39 @@ describe('generateHAConfig — output is well-formed YAML', () => {
     expect(cfg.trayCount).toBe(0);
   });
 });
+
+describe('generateHAConfig — issue #75 (MQTT flickers must not zero the usage meter)', () => {
+  it('offline trigger fires only after a sustained offline, for both brands', () => {
+    for (const printer of [bambuPrinter(), crealityPrinter()]) {
+      const { automationsYaml } = generateHAConfig([printer], 'http://hook', 'http://hook');
+      const parsed = parseYaml(automationsYaml);
+      const updateSpool = parsed.find((a: { id: string }) => a.id === `spoolmansync_update_spool_${printer.prefix}`);
+      const offlineTrigger = updateSpool.triggers.find((t: { id?: string }) => t.id === 'offline');
+      // A brief stage bounce through offline (e.g. Panda Touch MQTT slot
+      // contention) used to calibrate the meter to 0 mid-print, so the print's
+      // deduction shrank to only what accrued after the last flicker (#75).
+      // The for-timer restarts on any bounce, so only a real power-off fires.
+      expect(offlineTrigger.for).toBe('00:02:00');
+    }
+  });
+
+  it('print_end trigger has no for-delay (deductions stay prompt)', () => {
+    const { automationsYaml } = generateHAConfig([bambuPrinter()], 'http://hook', 'http://hook');
+    const parsed = parseYaml(automationsYaml);
+    const updateSpool = parsed.find((a: { id: string }) => a.id === 'spoolmansync_update_spool_x1c');
+    const printEnd = updateSpool.triggers.find((t: { id?: string }) => t.id === 'print_end');
+    expect(printEnd.for).toBeUndefined();
+  });
+
+  it('Bambu usage sensor availability covers BOTH print_weight and print_progress', () => {
+    const { configurationAdditions } = generateHAConfig([bambuPrinter()], 'http://hook', 'http://hook');
+    const parsed = parseYaml(configurationAdditions);
+    const sensors = parsed.template[0].sensor as Array<{ name: string; availability: string }>;
+    const usage = sensors.find(s => s.name === 'SpoolmanSync x1c Filament Usage')!;
+    // If print_progress alone flickers unavailable, float(0) would make the
+    // state a VALID 0: the meter discards the dip but re-adds the recovery
+    // climb, over-counting. Unavailability makes the meter skip the gap.
+    expect(usage.availability).toContain('sensor.x1c_print_weight');
+    expect(usage.availability).toContain('sensor.x1c_print_progress');
+  });
+});

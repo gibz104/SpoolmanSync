@@ -277,6 +277,14 @@ function generateAutomationsYaml(
     - entity_id: ${entities.current_stage}
       to:
         - offline
+      # Only treat a SUSTAINED offline as a power-off. Brief MQTT flickers (e.g.
+      # Panda Touch competing for the printer's client slots) bounce the stage
+      # through offline for seconds; zeroing the usage meter on every such blip
+      # silently discarded the filament tracked so far, so a print's deduction
+      # shrank to only what accrued after the last flicker (#75). The for-timer
+      # restarts on any bounce, so flickers never fire this trigger, while a
+      # real power-off still resets the meter (#66).
+      for: "00:02:00"
       id: offline
       trigger: state`
     : `
@@ -570,6 +578,9 @@ function generateCrealityAutomationsYaml(
       to:
         - 'off'
         - offline
+      # Sustained offline only — brief connection flickers must not zero the
+      # usage meter (#75); the for-timer restarts on any bounce.
+      for: "00:02:00"
       id: offline
       trigger: state`
     : `
@@ -957,8 +968,13 @@ function generateConfigurationAdditions(
         state: >
           {{ states('${p.discoveredEntities.print_weight}') | float(0) / 100 *
              states('${p.discoveredEntities.print_progress}') | float(0) }}
+        # Availability must cover BOTH inputs. If print_progress flickers
+        # unavailable alone, float(0) makes this a VALID 0: the utility meter
+        # discards the dip but re-adds the recovery climb, over-counting usage.
+        # Going unavailable instead makes the meter skip the gap cleanly (#75).
         availability: >
-          {{ states('${p.discoveredEntities.print_weight}') not in ['unknown', 'unavailable'] }}`
+          {{ states('${p.discoveredEntities.print_weight}') not in ['unknown', 'unavailable']
+             and states('${p.discoveredEntities.print_progress}') not in ['unknown', 'unavailable'] }}`
         : unavailableUsageSensor(p.prefix, missingForUsage);
     }
 
