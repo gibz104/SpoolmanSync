@@ -5,6 +5,13 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.7] - 2026-07-28
+
+> Upgrade note: re-run Auto-configure / regenerate your Home Assistant automations to pick up this fix. Without regenerating, behavior is unchanged.
+
+### Fixed
+- Print-end deductions are no longer silently skipped when the printer's connection blips at print completion (follow-up to #75, reported on the forum with a Bambu X2D). Many Bambu printers briefly report `offline` for a few seconds right as a print finishes, so the stage arrives at `idle` from `offline` — a sequence the automation treated as a power-on and ignored, without logging anything. The power-on protection (#66) now rests entirely on the meter guards added in v1.6.6: the usage meter is zeroed after every flush and after a sustained two-minute offline, so a boot-time print-end fires with 0g and deducts nothing, while a genuine print end arriving via a brief offline blip now deducts normally. Two visible side effects: powering the printer on may log a harmless "SPOOLMANSYNC PRINT END (skipped)" info entry, and a quick (under two minutes) power loss mid-print now deducts the filament that was actually consumed before the outage instead of discarding it.
+
 ## [1.6.6] - 2026-07-26
 
 > Upgrade note: existing users should re-run Auto-configure / regenerate their Home Assistant automations to pick up the filament-usage fix below. Without regenerating, behavior is unchanged (nothing breaks).
