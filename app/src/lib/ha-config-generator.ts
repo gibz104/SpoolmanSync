@@ -426,13 +426,21 @@ function generateAutomationsYaml(
 
         # =====================================================================
         # PRINT END - Log final tray usage from helper
+        #
+        # 'offline' is deliberately NOT excluded from from_state: many printers'
+        # connection blips for a few seconds right at print completion, so the
+        # stage arrives at idle FROM offline and the deduction was silently
+        # skipped (#75 follow-up). Power-on re-deduction (#66) is guarded
+        # elsewhere: the meter is zeroed after every flush, a sustained offline
+        # zeroes it too, and the usage sensor cannot re-accumulate across the
+        # outage, so a boot-time print_end flushes 0g and does nothing.
         # =====================================================================
         - conditions:
             - condition: template
               value_template: >-
                 {{ trigger.id == 'print_end'
                    and trigger.from_state is not none
-                   and trigger.from_state.state not in ['unavailable', 'unknown', 'idle', 'finished', 'offline', 'off', 'none'] }}
+                   and trigger.from_state.state not in ['unavailable', 'unknown', 'idle', 'finished', 'none'] }}
           sequence:
             - choose:
                 - conditions:
@@ -462,7 +470,9 @@ function generateAutomationsYaml(
                     message: >-
                       SPOOLMANSYNC PRINT END (skipped) | Tray: {{ tray_composite }} | Weight: {{ tray_weight }}g |
                       Reason: {{ 'no tray in helper' if tray_composite < 0 else 'no weight' }}
-                    level: warning
+                    # info, not warning: with 'offline' allowed as a from_state
+                    # this fires benignly on every printer power-on (meter is 0).
+                    level: info
             # Always reset meter after print
             - action: utility_meter.calibrate
               target:
@@ -705,13 +715,19 @@ function generateCrealityAutomationsYaml(
 
         # =====================================================================
         # PRINT END - Log final tray usage from helper
+        #
+        # 'off'/'offline' deliberately NOT excluded from from_state — kept in
+        # step with the Bambu automation (#75 follow-up). ha_creality_ws
+        # surfaces disconnects as 'unavailable' (still excluded), so this is
+        # symmetry rather than a live fix; the #66 guards (meter zeroed after
+        # every flush and on sustained offline) hold here identically.
         # =====================================================================
         - conditions:
             - condition: template
               value_template: >-
                 {{ trigger.id == 'print_end'
                    and trigger.from_state is not none
-                   and trigger.from_state.state not in ['unavailable', 'unknown', 'idle', 'completed', 'off', 'offline', 'none'] }}
+                   and trigger.from_state.state not in ['unavailable', 'unknown', 'idle', 'completed', 'none'] }}
           sequence:
             - choose:
                 - conditions:
@@ -741,7 +757,9 @@ function generateCrealityAutomationsYaml(
                     message: >-
                       SPOOLMANSYNC PRINT END (Creality, skipped) | Tray: {{ tray_composite }} | Length: {{ tray_usage_cm }}cm |
                       Reason: {{ 'no tray in helper' if tray_composite < 0 else 'no length' }}
-                    level: warning
+                    # info, not warning: fires benignly on power-on now that
+                    # 'off'/'offline' are allowed as from_states.
+                    level: info
             - action: utility_meter.calibrate
               target:
                 entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter

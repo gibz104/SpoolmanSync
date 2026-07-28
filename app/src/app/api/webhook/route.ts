@@ -142,7 +142,9 @@ export async function POST(request: NextRequest) {
       // active tray sensor recomputes — see issue #54), so any "same spool + tray
       // + weight within N seconds" guard would silently drop real usage and
       // under-count. Power-on re-deduction (issue #66) is instead prevented at the
-      // source: the automation's offline-state exclusion + meter-reset-on-offline.
+      // source: the usage meter is zeroed after every flush and after a sustained
+      // (2 minute) offline, and the usage sensor cannot re-accumulate across an
+      // outage — so a boot-time print-end flush carries 0g and deducts nothing.
 
       // Deduct the used weight from the spool
       await client.useWeight(matchedSpool.id, weightToDeduct);

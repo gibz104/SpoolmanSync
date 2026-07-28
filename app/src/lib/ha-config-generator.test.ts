@@ -45,14 +45,21 @@ function crealityPrinter(): HAPrinter {
 }
 
 describe('generateHAConfig — issue #66 (no re-deduction on power-on)', () => {
-  it('Bambu print-end guard excludes offline/off/none', () => {
+  // Since the #75 follow-up, 'offline'/'off' are deliberately ALLOWED as
+  // print_end from_states: many printers blip offline for a few seconds right
+  // at print completion, and excluding them silently skipped the deduction.
+  // Power-on safety now rests on the meter guards (zeroed after every flush
+  // and on sustained offline), not on this exclusion.
+  it('Bambu print-end guard excludes restart noise but NOT offline', () => {
     const { automationsYaml } = generateHAConfig([bambuPrinter()], 'http://hook', 'http://hook');
-    expect(automationsYaml).toContain("'unavailable', 'unknown', 'idle', 'finished', 'offline', 'off', 'none'");
+    expect(automationsYaml).toContain("'unavailable', 'unknown', 'idle', 'finished', 'none'");
+    expect(automationsYaml).not.toContain("'idle', 'finished', 'offline'");
   });
 
-  it('Creality print-end guard excludes offline/off/none', () => {
+  it('Creality print-end guard excludes restart noise but NOT off/offline', () => {
     const { automationsYaml } = generateHAConfig([crealityPrinter()], 'http://hook', 'http://hook');
-    expect(automationsYaml).toContain("'unavailable', 'unknown', 'idle', 'completed', 'off', 'offline', 'none'");
+    expect(automationsYaml).toContain("'unavailable', 'unknown', 'idle', 'completed', 'none'");
+    expect(automationsYaml).not.toContain("'completed', 'off', 'offline'");
   });
 
   it('adds an offline trigger + meter-reset branch (Bambu)', () => {
@@ -183,5 +190,82 @@ describe('generateHAConfig — issue #75 (MQTT flickers must not zero the usage 
     // climb, over-counting. Unavailability makes the meter skip the gap.
     expect(usage.availability).toContain('sensor.x1c_print_weight');
     expect(usage.availability).toContain('sensor.x1c_print_progress');
+  });
+});
+
+describe('generateHAConfig — issue #75 follow-up (print end arriving via offline must deduct)', () => {
+  /**
+   * Many printers' MQTT connection blips for a few seconds at print completion,
+   * so the stage sequence is printing -> offline -> idle. The print_end guard
+   * used to exclude from_state 'offline', silently skipping the deduction on
+   * every such print (no log line of any kind, since the top-level choose has
+   * no default). These tests pin the guard semantics by evaluating the actual
+   * generated Jinja membership list.
+   */
+  const printEndExclusions = (yaml: string, prefix: string): string[] => {
+    const parsed = parseYaml(yaml) as Array<{
+      id: string;
+      actions: Array<{ choose?: Array<{ conditions: Array<{ value_template: string }> }> }>;
+    }>;
+    const automation = parsed.find(a => a.id === `spoolmansync_update_spool_${prefix}`)!;
+    const chooseAction = automation.actions.find(a => a.choose)!;
+    const printEndBranch = chooseAction.choose!.find(b =>
+      b.conditions[0].value_template.includes("trigger.id == 'print_end'"))!;
+    const listMatch = printEndBranch.conditions[0].value_template.match(/not in \[([^\]]+)\]/)!;
+    return listMatch[1].split(',').map(s => s.trim().replace(/^'|'$/g, ''));
+  };
+
+  it('Bambu: offline/off are allowed from_states; restart noise stays excluded', () => {
+    const { automationsYaml } = generateHAConfig([bambuPrinter()], 'http://hook', 'http://hook');
+    const exclusions = printEndExclusions(automationsYaml, 'x1c');
+    expect(exclusions).not.toContain('offline');
+    expect(exclusions).not.toContain('off');
+    expect(exclusions).toEqual(expect.arrayContaining(['unavailable', 'unknown', 'idle', 'finished', 'none']));
+    expect(exclusions).not.toContain('printing');
+  });
+
+  it('Creality: off/offline are allowed from_states; restart noise stays excluded', () => {
+    const { automationsYaml } = generateHAConfig([crealityPrinter()], 'http://hook', 'http://hook');
+    const exclusions = printEndExclusions(automationsYaml, 'ender');
+    expect(exclusions).not.toContain('offline');
+    expect(exclusions).not.toContain('off');
+    expect(exclusions).toEqual(expect.arrayContaining(['unavailable', 'unknown', 'idle', 'completed', 'none']));
+  });
+
+  it('the from_state None guard survives (restart edge)', () => {
+    for (const printer of [bambuPrinter(), crealityPrinter()]) {
+      const { automationsYaml } = generateHAConfig([printer], 'http://hook', 'http://hook');
+      expect(automationsYaml).toContain('trigger.from_state is not none');
+    }
+  });
+
+  it('the power-cycle guards the exclusion relied on remain in place', () => {
+    const { automationsYaml } = generateHAConfig([bambuPrinter()], 'http://hook', 'http://hook');
+    const parsed = parseYaml(automationsYaml) as Array<{ id: string; triggers: Array<{ id?: string; for?: string }> }>;
+    const updateSpool = parsed.find(a => a.id === 'spoolmansync_update_spool_x1c')!;
+    // Sustained-offline meter zero still guarded by the 2-minute for-timer
+    expect(updateSpool.triggers.find(t => t.id === 'offline')!.for).toBe('00:02:00');
+    // Meter is always reset after a print-end flush
+    expect(automationsYaml).toContain('SPOOLMANSYNC METER RESET after print end');
+  });
+
+  it('the skipped-flush log is info level (fires benignly on every power-on now)', () => {
+    for (const printer of [bambuPrinter(), crealityPrinter()]) {
+      const { automationsYaml } = generateHAConfig([printer], 'http://hook', 'http://hook');
+      const parsed = parseYaml(automationsYaml) as Array<{
+        id: string;
+        actions: Array<{ choose?: Array<{
+          conditions: Array<{ value_template: string }>;
+          sequence: Array<{ default?: Array<{ data?: { message?: string; level?: string } }> }>;
+        }> }>;
+      }>;
+      const automation = parsed.find(a => a.id === `spoolmansync_update_spool_${printer.prefix}`)!;
+      const chooseAction = automation.actions.find(a => a.choose)!;
+      const printEndBranch = chooseAction.choose!.find(b =>
+        b.conditions[0].value_template.includes("trigger.id == 'print_end'"))!;
+      const innerDefault = printEndBranch.sequence.find(s => s.default)!.default!;
+      const skippedLog = innerDefault.find(a => a.data?.message?.includes('skipped'))!;
+      expect(skippedLog.data!.level, printer.prefix).toBe('info');
+    }
   });
 });
