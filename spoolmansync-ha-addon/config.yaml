@@ -1,5 +1,5 @@
 name: SpoolmanSync
-version: "1.6.7"
+version: "1.6.8"
 slug: spoolmansync-ha-addon
 description: Automatic filament tracking for Bambu Lab and Creality printers with Spoolman
 url: https://github.com/gibz104/SpoolmanSync

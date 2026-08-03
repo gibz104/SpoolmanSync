@@ -5,6 +5,11 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.8] - 2026-08-03
+
+### Fixed
+- Add-on release notes now appear in Home Assistant (#76). The add-on's changelog file was a placeholder linking to the GitHub Releases page (which is empty, since releases are cut as git tags), so the update dialog and the add-on page's Changelog link never showed what changed — including upgrade notes like the recent "regenerate your automations" ones. Home Assistant reads the `CHANGELOG.md` next to the add-on's `config.yaml`, never GitHub releases or tags; that file is now a symlink to this changelog, so updates display the full release history.
+
 ## [1.6.7] - 2026-07-28
 
 > Upgrade note: re-run Auto-configure / regenerate your Home Assistant automations to pick up this fix. Without regenerating, behavior is unchanged.
