@@ -269,3 +269,127 @@ describe('generateHAConfig — issue #75 follow-up (print end arriving via offli
     }
   });
 });
+
+describe('generateHAConfig — issue #77 (empty-string blips must not zero the usage meter)', () => {
+  // The Bambu fixture is external-only for Creality, so #77's CFS coverage
+  // needs a Creality printer that actually has box slots.
+  function crealityCfsPrinter(): HAPrinter {
+    return {
+      brand: 'creality',
+      entity_id: 'sensor.k2_print_status',
+      name: 'K2 Plus',
+      state: 'idle',
+      prefix: 'k2',
+      ams_units: [
+        {
+          entity_id: 'sensor.k2_cfs_1',
+          name: 'CFS 1',
+          ams_number: 1,
+          trays: [
+            { entity_id: 'sensor.k2_cfs_1_slot_1', unique_id: 'k2_cfs_1_slot_1', tray_number: 1 },
+            { entity_id: 'sensor.k2_cfs_1_slot_2', unique_id: 'k2_cfs_1_slot_2', tray_number: 2 },
+          ],
+        },
+      ],
+      external_spools: [],
+      print_progress_entity: 'sensor.k2_print_progress',
+      used_material_entity: 'sensor.k2_used_material_length',
+    };
+  }
+
+  type ChooseStep = {
+    choose: Array<{ conditions: Array<{ value_template: string }>; sequence: unknown[] }>;
+    default: unknown[];
+  };
+
+  // The inner choose of the Update Spool automation's tray branch:
+  // [flush, departure-reset] + preserve default.
+  function trayBranchInnerChoose(printer: HAPrinter): ChooseStep {
+    const { automationsYaml } = generateHAConfig([printer], 'http://hook', 'http://hook');
+    const parsed = parseYaml(automationsYaml) as Array<{
+      id: string;
+      actions: Array<{ choose: Array<{ conditions: Array<{ value_template: string }>; sequence: ChooseStep[] }> }>;
+    }>;
+    const updateSpool = parsed.find(a => a.id === `spoolmansync_update_spool_${printer.prefix}`)!;
+    const trayBranch = updateSpool.actions[0].choose.find(b =>
+      b.conditions[0].value_template.includes("trigger.id == 'tray'"))!;
+    return trayBranch.sequence[0];
+  }
+
+  it('a blip arrival (no from-tray, same tray as helper) PRESERVES the meter, both brands', () => {
+    for (const printer of [bambuPrinter(), crealityCfsPrinter()]) {
+      const inner = trayBranchInnerChoose(printer);
+      // The default branch handles old_tray < 0 arrivals; it must not calibrate.
+      expect(JSON.stringify(inner.default), printer.prefix).not.toContain('utility_meter.calibrate');
+      expect(JSON.stringify(inner.default), printer.prefix).toContain('meter preserved');
+    }
+  });
+
+  it('only a KNOWN tray going inactive still resets an unflushable meter, both brands', () => {
+    for (const printer of [bambuPrinter(), crealityCfsPrinter()]) {
+      const inner = trayBranchInnerChoose(printer);
+      const resetBranch = inner.choose[1];
+      expect(resetBranch.conditions[0].value_template.trim(), printer.prefix).toBe('{{ old_tray >= 0 }}');
+      expect(JSON.stringify(resetBranch.sequence), printer.prefix).toContain('utility_meter.calibrate');
+    }
+  });
+
+  it('flush gate covers departures and cross-tray recoveries but not same-tray blips, both brands', () => {
+    for (const printer of [bambuPrinter(), crealityCfsPrinter()]) {
+      const inner = trayBranchInnerChoose(printer);
+      const gate = inner.choose[0].conditions[0].value_template;
+      expect(gate, printer.prefix).toContain('tray_composite >= 0');
+      expect(gate, printer.prefix).toContain('old_tray >= 0 or (new_tray >= 0 and new_tray != tray_composite)');
+      // Flush still posts to Spoolman before the meter reset
+      expect(JSON.stringify(inner.choose[0].sequence), printer.prefix).toContain('rest_command.spoolmansync_update_spool');
+      expect(JSON.stringify(inner.choose[0].sequence), printer.prefix).toContain('utility_meter.calibrate');
+    }
+  });
+
+  it('tray triggers fall back to the last_tray helper as the flush target', () => {
+    for (const printer of [bambuPrinter(), crealityCfsPrinter()]) {
+      const { automationsYaml } = generateHAConfig([printer], 'http://hook', 'http://hook');
+      const parsed = parseYaml(automationsYaml) as Array<{ id: string; variables: Record<string, string> }>;
+      const updateSpool = parsed.find(a => a.id === `spoolmansync_update_spool_${printer.prefix}`)!;
+      expect(updateSpool.variables.helper_tray, printer.prefix)
+        .toContain(`input_number.spoolmansync_${printer.prefix}_last_tray`);
+      expect(updateSpool.variables.tray_composite, printer.prefix)
+        .toContain('old_tray if old_tray >= 0 else helper_tray');
+      // helper_tray must be declared before tray_composite (variables render top-down)
+      const keys = Object.keys(updateSpool.variables);
+      expect(keys.indexOf('helper_tray'), printer.prefix).toBeLessThan(keys.indexOf('tray_composite'));
+    }
+  });
+
+  it('last_tray helper starts at -1 for tray printers but 0 for external-spool-only printers', () => {
+    const tray = parseYaml(generateHAConfig([bambuPrinter()], 'http://hook', 'http://hook').configurationAdditions);
+    expect(tray.input_number.spoolmansync_x1c_last_tray.min).toBe(-1);
+
+    const cfs = parseYaml(generateHAConfig([crealityCfsPrinter()], 'http://hook', 'http://hook').configurationAdditions);
+    expect(cfs.input_number.spoolmansync_k2_last_tray.min).toBe(-1);
+
+    // External-only printers never fire the tray branch, so the helper is never
+    // written; min 0 = composite 0 is their only print_end flush path (#68).
+    const ext = parseYaml(generateHAConfig([crealityPrinter()], 'http://hook', 'http://hook').configurationAdditions);
+    expect(ext.input_number.spoolmansync_ender_last_tray.min).toBe(0);
+  });
+
+  it('the #69 trigger guard is unchanged (empty string deliberately NOT blocked)', () => {
+    for (const printer of [bambuPrinter(), crealityCfsPrinter()]) {
+      const { automationsYaml } = generateHAConfig([printer], 'http://hook', 'http://hook');
+      const parsed = parseYaml(automationsYaml) as Array<{ id: string; triggers: Array<{ id?: string; not_from?: string[]; not_to?: string[] }> }>;
+      const updateSpool = parsed.find(a => a.id === `spoolmansync_update_spool_${printer.prefix}`)!;
+      const trayTrigger = updateSpool.triggers.find(t => t.id === 'tray')!;
+      expect(trayTrigger.not_from, printer.prefix).toEqual(['unavailable', 'unknown']);
+      expect(trayTrigger.not_to, printer.prefix).toEqual(['unavailable', 'unknown']);
+    }
+  });
+
+  it('generated automations still parse as valid YAML with the new structure', () => {
+    for (const printer of [bambuPrinter(), crealityCfsPrinter(), crealityPrinter()]) {
+      const { automationsYaml, configurationAdditions } = generateHAConfig([printer], 'http://hook', 'http://hook');
+      expect(() => parseYaml(automationsYaml), printer.prefix).not.toThrow();
+      expect(() => parseYaml(configurationAdditions), printer.prefix).not.toThrow();
+    }
+  });
+});

@@ -315,9 +315,11 @@ function generateAutomationsYaml(
     - entity_id: sensor.spoolmansync_${prefix}_active_tray
       id: tray
       # Ignore transient availability flickers (e.g. MQTT reconnects). A blip to
-      # 'unavailable' and back is not a real tray change, and must not run this
-      # automation — otherwise the tray-change default branch resets the usage
-      # meter mid-print and the filament tracked so far is lost (#69).
+      # 'unavailable' and back is not a real tray change and must not run this
+      # automation — the from-tray edge would otherwise hit the flush branch and
+      # post a spurious early deduction (#69). Empty-string blips are handled
+      # differently: '' is the sensor's normal idle state, so it stays
+      # triggerable and the meter is preserved in the actions instead (#77).
       not_from:
         - unavailable
         - unknown
@@ -340,12 +342,18 @@ function generateAutomationsYaml(
       {% else %}
         -1
       {% endif %}
-    # For print_end: use the helper
+    # Last tray this automation knew was in use. The active-tray sensor renders
+    # '' whenever no tray reports active, so every blip passes through '' and
+    # the from-state often names no tray (#77) — the helper is the flush target
+    # for those cases.
+    helper_tray: "{{ states('input_number.spoolmansync_${prefix}_last_tray') | int(-1) }}"
+    # For print_end: use the helper. For tray triggers: the from-state's tray,
+    # falling back to the helper when the from-state names none.
     tray_composite: |-
       {% if trigger.id == 'print_end' %}
-        {{ states('input_number.spoolmansync_${prefix}_last_tray') | int(-1) }}
+        {{ helper_tray }}
       {% else %}
-        {{ old_tray }}
+        {{ old_tray if old_tray >= 0 else helper_tray }}
       {% endif %}
     # Build sensor entity ID for the tray we're logging
     tray_sensor: "${trayEntityLookup}"
@@ -357,28 +365,33 @@ function generateAutomationsYaml(
   actions:
     - choose:
         # =====================================================================
-        # TRAY CHANGE - Log old tray usage (if valid), ALWAYS update helper
+        # TRAY CHANGE - Flush usage to the outgoing (or last known) tray,
+        # then update the helper when a new tray is active
         # =====================================================================
         - conditions:
             - condition: template
               value_template: "{{ trigger.id == 'tray' }}"
           sequence:
-            # Log usage from OLD tray if:
-            # 1. old_tray was valid (>= 0)
-            # 2. we have weight to log (>= 0.01g)
-            # 3. tray_sensor resolved to a valid entity (defense-in-depth)
+            # Flush accumulated usage when we know which tray it belongs to:
+            # - a known tray goes inactive (old_tray >= 0, the pre-#77 case), or
+            # - a DIFFERENT tray becomes active after a gap (old_tray < 0 because
+            #   the from-state was '' or the inactive edge was missed): flush to
+            #   the last known tray (helper) before tracking the new one (#77).
             # Note: We don't check current stage because accumulated weight on the
             # utility meter represents real filament consumption that should be logged.
             # This handles cancelled prints where the user unloads filament while idle.
             - choose:
                 - conditions:
                     - condition: template
-                      value_template: "{{ old_tray >= 0 and tray_weight >= 0.01 and tray_sensor != '' }}"
+                      value_template: >-
+                        {{ tray_composite >= 0 and tray_weight >= 0.01 and tray_sensor != ''
+                           and (old_tray >= 0 or (new_tray >= 0 and new_tray != tray_composite)) }}
                   sequence:
                     - action: system_log.write
                       data:
                         message: >-
                           SPOOLMANSYNC TRAY CHANGE | Old tray {{ old_tray }} -> New tray {{ new_tray }} |
+                          Flush tray {{ tray_composite }} |
                           Sensor: {{ tray_sensor }} |
                           Spool: {{ name }} ({{ material }}) |
                           Weight used: {{ tray_weight }}g |
@@ -397,21 +410,36 @@ function generateAutomationsYaml(
                         entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter
                       data:
                         value: "0"
+                # A known tray went inactive with nothing to flush: reset so no
+                # stale value accumulates (unchanged pre-#77 behavior).
+                - conditions:
+                    - condition: template
+                      value_template: "{{ old_tray >= 0 }}"
+                  sequence:
+                    - action: system_log.write
+                      data:
+                        message: >-
+                          SPOOLMANSYNC TRAY CHANGE (no usage logged) | Old: {{ old_tray }} -> New: {{ new_tray }} |
+                          Weight: {{ tray_weight }}g |
+                          Reason: {{ 'no weight to log' if tray_weight < 0.01 else 'tray sensor not found' }}
+                        level: debug
+                    - action: utility_meter.calibrate
+                      target:
+                        entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter
+                      data:
+                        value: "0"
+              # No tray in the from-state and nothing owed to a different tray
+              # (same-tray blip, or no last tray known): PRESERVE the meter.
+              # Zeroing here is what silently discarded mid-print usage on
+              # '' round-trips (#77, follow-up to #69).
               default:
                 - action: system_log.write
                   data:
                     message: >-
-                      SPOOLMANSYNC TRAY CHANGE (no usage logged) | Old: {{ old_tray }} -> New: {{ new_tray }} |
-                      Weight: {{ tray_weight }}g |
-                      Reason: {{ 'old_tray invalid' if old_tray < 0 else 'no weight to log' }}
-                    level: debug
-                # Reset meter anyway to prevent stale values from accumulating
-                - action: utility_meter.calibrate
-                  target:
-                    entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter
-                  data:
-                    value: "0"
-            # ALWAYS update helper to new tray composite ID
+                      SPOOLMANSYNC TRAY CHANGE (meter preserved) | Old: {{ old_tray }} -> New: {{ new_tray }} |
+                      Weight: {{ tray_weight }}g | Last tray: {{ helper_tray }}
+                    level: info
+            # Update helper to the new tray composite ID (when one is active)
             - condition: template
               value_template: "{{ new_tray >= 0 }}"
             - action: input_number.set_value
@@ -617,9 +645,11 @@ function generateCrealityAutomationsYaml(
     - entity_id: sensor.spoolmansync_${prefix}_active_tray
       id: tray
       # Ignore transient availability flickers (e.g. MQTT reconnects). A blip to
-      # 'unavailable' and back is not a real tray change, and must not run this
-      # automation — otherwise the tray-change default branch resets the usage
-      # meter mid-print and the filament tracked so far is lost (#69).
+      # 'unavailable' and back is not a real tray change and must not run this
+      # automation — the from-slot edge would otherwise hit the flush branch and
+      # post a spurious early deduction (#69). Empty-string blips are handled
+      # differently: '' is the sensor's normal idle state, so it stays
+      # triggerable and the meter is preserved in the actions instead (#77).
       not_from:
         - unavailable
         - unknown
@@ -640,11 +670,14 @@ function generateCrealityAutomationsYaml(
       {% else %}
         -1
       {% endif %}
+    # Last slot this automation knew was in use — flush target when the
+    # from-state names no slot (the sensor renders '' between changes, #77).
+    helper_tray: "{{ states('input_number.spoolmansync_${prefix}_last_tray') | int(-1) }}"
     tray_composite: |-
       {% if trigger.id == 'print_end' %}
-        {{ states('input_number.spoolmansync_${prefix}_last_tray') | int(-1) }}
+        {{ helper_tray }}
       {% else %}
-        {{ old_tray }}
+        {{ old_tray if old_tray >= 0 else helper_tray }}
       {% endif %}
     tray_sensor: "${trayEntityLookup}"
     tray_usage_cm: "{{ states('sensor.spoolmansync_${prefix}_filament_usage_meter') | float(0) | round(2) }}"
@@ -655,21 +688,29 @@ function generateCrealityAutomationsYaml(
   actions:
     - choose:
         # =====================================================================
-        # TRAY CHANGE - Log old tray usage (if valid), ALWAYS update helper
+        # TRAY CHANGE - Flush usage to the outgoing (or last known) tray,
+        # then update the helper when a new tray is active
         # =====================================================================
         - conditions:
             - condition: template
               value_template: "{{ trigger.id == 'tray' }}"
           sequence:
+            # Same #77 structure as the Bambu automation: flush to a known slot
+            # (from-state, or the helper on cross-slot recovery), reset only on
+            # a known slot going inactive with nothing to flush, and PRESERVE
+            # the meter on ''-blip arrivals.
             - choose:
                 - conditions:
                     - condition: template
-                      value_template: "{{ old_tray >= 0 and tray_usage_cm >= 0.01 and tray_sensor != '' }}"
+                      value_template: >-
+                        {{ tray_composite >= 0 and tray_usage_cm >= 0.01 and tray_sensor != ''
+                           and (old_tray >= 0 or (new_tray >= 0 and new_tray != tray_composite)) }}
                   sequence:
                     - action: system_log.write
                       data:
                         message: >-
                           SPOOLMANSYNC TRAY CHANGE (Creality) | Old tray {{ old_tray }} -> New tray {{ new_tray }} |
+                          Flush tray {{ tray_composite }} |
                           Sensor: {{ tray_sensor }} |
                           Spool: {{ name }} ({{ material }}) |
                           Length used: {{ tray_usage_cm }}cm |
@@ -688,19 +729,29 @@ function generateCrealityAutomationsYaml(
                         entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter
                       data:
                         value: "0"
+                - conditions:
+                    - condition: template
+                      value_template: "{{ old_tray >= 0 }}"
+                  sequence:
+                    - action: system_log.write
+                      data:
+                        message: >-
+                          SPOOLMANSYNC TRAY CHANGE (Creality, no usage logged) | Old: {{ old_tray }} -> New: {{ new_tray }} |
+                          Length: {{ tray_usage_cm }}cm |
+                          Reason: {{ 'no length to log' if tray_usage_cm < 0.01 else 'slot sensor not found' }}
+                        level: debug
+                    - action: utility_meter.calibrate
+                      target:
+                        entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter
+                      data:
+                        value: "0"
               default:
                 - action: system_log.write
                   data:
                     message: >-
-                      SPOOLMANSYNC TRAY CHANGE (Creality, no usage logged) | Old: {{ old_tray }} -> New: {{ new_tray }} |
-                      Length: {{ tray_usage_cm }}cm |
-                      Reason: {{ 'old_tray invalid' if old_tray < 0 else 'no length to log' }}
-                    level: debug
-                - action: utility_meter.calibrate
-                  target:
-                    entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter
-                  data:
-                    value: "0"
+                      SPOOLMANSYNC TRAY CHANGE (Creality, meter preserved) | Old: {{ old_tray }} -> New: {{ new_tray }} |
+                      Length: {{ tray_usage_cm }}cm | Last tray: {{ helper_tray }}
+                    level: info
             - condition: template
               value_template: "{{ new_tray >= 0 }}"
             - action: input_number.set_value
@@ -929,12 +980,22 @@ function generateConfigurationAdditions(
   const printerList = printerConfigs.map(p => p.prefix).join(', ');
   const totalTrays = printerConfigs.reduce((sum, p) => sum + p.allTrays.length, 0);
 
-  // Build per-printer input_number entries
+  // Build per-printer input_number entries.
+  //
+  // Printers with AMS/CFS trays start the helper at -1 ("no tray known yet") so
+  // a fresh install can't flush usage to composite 0 — the external spool — by
+  // default (#77). External-spool-only printers must keep min 0: their
+  // active-tray sensor never changes state (single constant slot, or the
+  // virtual slot with no backing entity, #68), so the helper is never written
+  // and 0 is the only value that lets print_end flush their one slot. Existing
+  // installs are unaffected either way: input_number restores its last value
+  // when it is within the new min/max range.
   const inputNumberEntries = printerConfigs.map(p => {
     const maxCompositeId = Math.max(...p.allTrays.map(t => t.compositeId), 99);
+    const minValue = p.allTrays.some(t => t.amsNumber > 0) ? -1 : 0;
     return `  spoolmansync_${p.prefix}_last_tray:
     name: "SpoolmanSync ${p.prefix} Last Tray"
-    min: 0
+    min: ${minValue}
     max: ${maxCompositeId}
     step: 1`;
   }).join('\n');
