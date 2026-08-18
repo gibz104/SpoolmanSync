@@ -5,6 +5,7 @@ import { SpoolmanClient } from '@/lib/api/spoolman';
 import { getHiddenPrinters } from '@/app/api/printers/setup/route';
 import { getVirtualPrinters, virtualPrintersToHAPrinters, migrateVirtualKeys, withVirtualLock } from '@/lib/virtual-printers';
 import { detectTrayMismatch } from '@/lib/tray-mismatch';
+import { reconcileSpoolLocations } from '@/lib/spool-location';
 
 export async function GET() {
   try {
@@ -129,6 +130,19 @@ export async function GET() {
         }
 
         traySpoolMap.set(cleanId, spool);
+      }
+
+      // Heal stale location labels after a printer rename in HA. Locations are
+      // only written at assignment time, so without this a renamed printer left
+      // every assigned spool parked under the old name until manually
+      // re-assigned. Runs AFTER the entity_id → unique_id migration above so
+      // just-migrated assignments resolve in the same load, and BEFORE
+      // enrichment so the response carries the healed locations. Hand-set
+      // locations are never touched (see reconcileSpoolLocations).
+      try {
+        await reconcileSpoolLocations(spoolmanClient, printers, spools);
+      } catch (err) {
+        console.warn('Location label reconcile failed (non-fatal):', err);
       }
 
       // Enrich printer data with spool info and mismatch detection

@@ -66,6 +66,21 @@ export function truncateLocation(value: string): string {
 }
 
 /**
+ * The tray half of a real-tray label — "AMS 1 Tray 3", "Tray 2", "External".
+ * Depends only on the tray itself, never on the printer name, which is what
+ * lets reconcileSpoolLocations() recognize a pre-rename label as ours.
+ */
+export function realTraySuffix(
+  amsName: string | undefined,
+  trayNumber: number,
+  isExternal: boolean,
+): string {
+  if (isExternal) return 'External';
+  if (amsName && amsName.trim()) return `${amsName.trim()} Tray ${trayNumber}`;
+  return `Tray ${trayNumber}`;
+}
+
+/**
  * Human-readable location label for a real printer tray, e.g.
  *   "X1C - AMS 1 Tray 3", "P1S - External".
  * Falls back to "<Printer> - Tray <N>" when no AMS name is available.
@@ -77,15 +92,7 @@ export function realTrayLocationLabel(
   isExternal: boolean,
 ): string {
   const name = (printerName || 'Printer').trim();
-  let label: string;
-  if (isExternal) {
-    label = `${name} - External`;
-  } else if (amsName && amsName.trim()) {
-    label = `${name} - ${amsName.trim()} Tray ${trayNumber}`;
-  } else {
-    label = `${name} - Tray ${trayNumber}`;
-  }
-  return truncateLocation(label);
+  return truncateLocation(`${name} - ${realTraySuffix(amsName, trayNumber, isExternal)}`);
 }
 
 /**
@@ -202,6 +209,247 @@ export async function makeLocationResolver(): Promise<LocationResolver | null> {
     if (!cache) cache = await build();
     return cache.get(trayKey) ?? '';
   };
+}
+
+/** Minimal structural shapes so reconcileSpoolLocations() is easy to test. */
+export interface ReconcilablePrinter {
+  name: string;
+  prefix: string;
+  is_virtual?: boolean;
+  ams_units: { name?: string; trays: { unique_id?: string; entity_id?: string; tray_number: number }[] }[];
+  external_spools: { unique_id?: string; entity_id?: string; tray_number: number }[];
+}
+export interface ReconcilableSpool {
+  id: number;
+  archived?: boolean;
+  location?: string | null;
+  extra?: Record<string, string>;
+}
+export interface LocationPatchClient {
+  getSpool(id: number): Promise<{ location?: string | null; extra?: Record<string, string> }>;
+  updateSpool(id: number, data: Record<string, unknown>): Promise<unknown>;
+}
+
+/**
+ * Settings key remembering, per printer prefix, the printer name whose labels
+ * SpoolmanSync last wrote, plus former names not yet fully migrated away from.
+ * Value: JSON `{ [prefix]: { current: string, formers: string[] } }`.
+ */
+export const LOCATION_PRINTER_NAMES_KEY = 'location_sync_printer_names';
+const MAX_FORMER_NAMES = 10;
+
+type StoredNames = Record<string, { current: string; formers: string[] }>;
+
+async function loadStoredNames(): Promise<StoredNames> {
+  const s = await prisma.settings.findUnique({ where: { key: LOCATION_PRINTER_NAMES_KEY } });
+  if (!s?.value) return {};
+  try {
+    const parsed: unknown = JSON.parse(s.value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    // Sanitize entry-by-entry so one malformed (hand-edited) entry can never
+    // throw later and take the whole reconcile down; a dropped entry simply
+    // re-bootstraps.
+    const out: StoredNames = {};
+    for (const [prefix, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!value || typeof value !== 'object') continue;
+      const { current, formers } = value as { current?: unknown; formers?: unknown };
+      if (typeof current !== 'string') continue;
+      out[prefix] = {
+        current,
+        formers: Array.isArray(formers)
+          ? formers.filter((f): f is string => typeof f === 'string').slice(0, MAX_FORMER_NAMES)
+          : [],
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function saveStoredNames(names: StoredNames): Promise<void> {
+  const value = JSON.stringify(names);
+  await prisma.settings.upsert({
+    where: { key: LOCATION_PRINTER_NAMES_KEY },
+    update: { value },
+    create: { key: LOCATION_PRINTER_NAMES_KEY, value },
+  });
+}
+
+/**
+ * Rewrite the `location` of assigned spools whose label went stale because the
+ * printer was renamed in Home Assistant. Locations are otherwise only written
+ * at assignment time, so after a device rename every assigned spool kept its
+ * old-name location until it was manually re-assigned (forum post 116).
+ *
+ * Safety model (a hand-set location must NEVER be rewritten):
+ * - SpoolmanSync remembers the printer name it last wrote labels under, keyed
+ *   by the rename-immune printer prefix. When the discovered name differs, the
+ *   remembered name becomes a "former name", and ONLY locations that exactly
+ *   equal `<former name> - <tray suffix>` for the spool's own tray are
+ *   migrated. A user-typed location — even one shaped like a label — can't
+ *   match a former name and is left alone, and once a former name's labels
+ *   have all migrated it is forgotten, so even deliberately restoring an old
+ *   label by hand sticks.
+ * - The very first run for a printer (nothing remembered yet, i.e. upgrades)
+ *   falls back once to shape matching: a location ending in the spool's own
+ *   " - <tray suffix>" is treated as ours and migrated. This one-time pass is
+ *   what heals renames that happened before this feature existed.
+ * - Every write re-fetches the spool first and skips it if the assignment or
+ *   location changed since the snapshot, so a concurrent webhook assign or
+ *   unassign is never overwritten with a stale label.
+ *
+ * Virtual printers are excluded: their labels are bare names with no
+ * recognizable shape, and virtual renames already migrate locations directly
+ * in the virtual-printers route. Failures are per-spool and non-fatal (the
+ * former name is kept for retry on the next load). Returns the number migrated.
+ */
+export async function reconcileSpoolLocations(
+  client: LocationPatchClient,
+  printers: ReconcilablePrinter[],
+  spools: ReconcilableSpool[],
+): Promise<number> {
+  if (!(await isLocationSyncEnabled())) return 0;
+
+  const names: StoredNames = { ...(await loadStoredNames()) };
+  let namesChanged = false;
+  const bootstrapPrefixes = new Set<string>();
+
+  // trayKey (unique_id AND entity_id) → current label, tray suffix, prefix.
+  const index = new Map<string, { label: string; suffix: string; prefix: string }>();
+  // Prefixes whose trays were actually visible this run. Only their formers may
+  // be consumed below — a printer absent from this run (hidden, or transiently
+  // missing from discovery) must keep its pending retries untouched.
+  const indexedPrefixes = new Set<string>();
+  for (const p of printers) {
+    if (p.is_virtual || !p.prefix) continue;
+
+    // Same normalization the label itself uses, so name comparisons and label
+    // construction can never disagree.
+    const currentName = (p.name || 'Printer').trim();
+    const entry = names[p.prefix];
+    if (!entry) {
+      names[p.prefix] = { current: currentName, formers: [] };
+      bootstrapPrefixes.add(p.prefix);
+      namesChanged = true;
+    } else if (entry.current !== currentName) {
+      const formers = [entry.current, ...entry.formers]
+        .filter((f, i, arr) => f !== currentName && arr.indexOf(f) === i)
+        .slice(0, MAX_FORMER_NAMES);
+      names[p.prefix] = { current: currentName, formers };
+      namesChanged = true;
+    }
+
+    for (const ams of p.ams_units) {
+      for (const t of ams.trays) {
+        const e = {
+          label: realTrayLocationLabel(p.name, ams.name, t.tray_number, false),
+          suffix: realTraySuffix(ams.name, t.tray_number, false),
+          prefix: p.prefix,
+        };
+        if (t.unique_id) index.set(t.unique_id, e);
+        if (t.entity_id) index.set(t.entity_id, e);
+        if (t.unique_id || t.entity_id) indexedPrefixes.add(p.prefix);
+      }
+    }
+    for (const ext of p.external_spools) {
+      const e = {
+        label: realTrayLocationLabel(p.name, undefined, ext.tray_number, true),
+        suffix: realTraySuffix(undefined, ext.tray_number, true),
+        prefix: p.prefix,
+      };
+      if (ext.unique_id) index.set(ext.unique_id, e);
+      if (ext.entity_id) index.set(ext.entity_id, e);
+      if (ext.unique_id || ext.entity_id) indexedPrefixes.add(p.prefix);
+    }
+  }
+
+  // Former names that could not be fully migrated this run (write failed or a
+  // concurrent change skipped the spool) are kept for retry on the next load.
+  const retainFormer = new Map<string, Set<string>>();
+  const keepFormer = (prefix: string, former: string) => {
+    if (!retainFormer.has(prefix)) retainFormer.set(prefix, new Set());
+    retainFormer.get(prefix)!.add(former);
+  };
+
+  let migrated = 0;
+  if (index.size > 0) {
+    for (const spool of spools) {
+      if (spool.archived) continue;
+      const raw = spool.extra?.['active_tray'];
+      if (!raw) continue;
+      const trayKey = raw.replace(/^"|"$/g, '');
+      if (!trayKey) continue;
+      const info = index.get(trayKey);
+      if (!info) continue;
+
+      const current = (spool.location ?? '').trim();
+      if (!current || current === info.label) continue;
+
+      const formers = names[info.prefix]?.formers ?? [];
+      const matchedFormer = formers.find(
+        f => current === truncateLocation(`${f} - ${info.suffix}`),
+      );
+      const isBootstrapMatch =
+        bootstrapPrefixes.has(info.prefix) && current.endsWith(` - ${info.suffix}`);
+      if (matchedFormer === undefined && !isBootstrapMatch) continue;
+
+      // The name to remember for retry if this spool can't migrate now. For a
+      // bootstrap match (nothing remembered yet) it is derived from the label
+      // itself, so a failed first-run migration is not stranded forever.
+      const retryName =
+        matchedFormer ?? current.slice(0, current.length - ` - ${info.suffix}`.length);
+
+      try {
+        // Guard against a concurrent assign/unassign between our snapshot and
+        // this write: only migrate if the spool is still exactly as snapshotted.
+        const fresh = await client.getSpool(spool.id);
+        const freshKey = (fresh.extra?.['active_tray'] ?? '').replace(/^"|"$/g, '');
+        const freshLocation = (fresh.location ?? '').trim();
+        if (freshKey !== trayKey || freshLocation !== current) {
+          keepFormer(info.prefix, retryName);
+          continue;
+        }
+
+        await client.updateSpool(spool.id, { location: info.label });
+        spool.location = info.label; // keep the caller's in-memory copy fresh
+        migrated++;
+        console.log(`[location-sync] Migrated spool ${spool.id} location "${current}" -> "${info.label}"`);
+      } catch (err) {
+        keepFormer(info.prefix, retryName);
+        console.warn(`[location-sync] Could not migrate spool ${spool.id} location:`, err);
+      }
+    }
+  }
+
+  // Forget fully-migrated former names so a user who later hand-restores an
+  // old-style label is never fought over it. Names that still need a retry
+  // (write failed or race-skipped) are kept — including ones derived during a
+  // bootstrap run, which otherwise would never get a second chance. Prefixes
+  // whose trays were not visible this run are left completely alone.
+  for (const [prefix, entry] of Object.entries(names)) {
+    if (!indexedPrefixes.has(prefix)) continue;
+    const keep = retainFormer.get(prefix);
+    const remaining = Array.from(keep ?? [])
+      .filter(f => f !== entry.current)
+      .slice(0, MAX_FORMER_NAMES);
+    if (
+      remaining.length !== entry.formers.length ||
+      remaining.some((f, i) => entry.formers[i] !== f)
+    ) {
+      names[prefix] = { ...entry, formers: remaining };
+      namesChanged = true;
+    }
+  }
+
+  if (namesChanged) {
+    try {
+      await saveStoredNames(names);
+    } catch (err) {
+      console.warn('[location-sync] Could not persist printer-name history:', err);
+    }
+  }
+  return migrated;
 }
 
 /**
