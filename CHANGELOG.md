@@ -5,6 +5,16 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.9] - 2026-08-17
+
+> Upgrade note: re-run Auto-configure / regenerate your Home Assistant automations to pick up the tracking fix below.
+
+### Fixed
+- Filament usage could be silently lost when the active tray sensor blipped through its empty idle state, which happens on every tray change and on brief connection hiccups (#77). The automation no longer resets the usage meter when a tray becomes active. A blip back to the same tray keeps counting, and a switch to a different tray first deducts the accumulated usage from the previous tray. Requires regenerating automations.
+
+### Added
+- Spoolman locations now follow a printer rename in Home Assistant. Renaming the device used to strand assigned spools in their old locations until each was re-assigned. The dashboard now migrates them automatically. Locations you set by hand are never touched.
+
 ## [1.6.8] - 2026-08-03
 
 ### Fixed
