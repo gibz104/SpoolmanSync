@@ -5,6 +5,11 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.10] - 2026-08-17
+
+### Security
+- Updated dependencies to resolve open security advisories. The main bumps are Next.js 16.1.6 to 16.3.1, ws 8.19 to 8.21.3, and the Prisma packages to 7.9.1, plus transitive patches to postcss, nanoid, sharp, and others. No app changes. Verified with the full test suite, production builds of both Docker images, and a live container smoke test.
+
 ## [1.6.9] - 2026-08-17
 
 > Upgrade note: re-run Auto-configure / regenerate your Home Assistant automations to pick up the tracking fix below.
