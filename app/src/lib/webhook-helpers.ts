@@ -3,7 +3,7 @@
  * the deduction- and assignment-critical logic can be unit-tested in isolation.
  */
 
-/** Returns true if tray_uuid/rfid is a real spool identifier (not empty, unknown, or all zeros). */
+/** Returns true if tray_uuid is a real spool identifier (not empty, unknown, or all zeros). */
 export function isValidTrayUuid(tray_uuid: string | undefined | null): boolean {
   if (!tray_uuid || tray_uuid === 'unknown' || tray_uuid === '') return false;
   // ha-bambulab reports all zeros for non-Bambu spools without RFID tags

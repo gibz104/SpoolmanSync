@@ -7,6 +7,7 @@ import { createActivityLog } from '@/lib/activity-log';
 import { checkAndUpdateAlerts } from '@/lib/alerts';
 import { getWebhookSecret, isWebhookAuthEnabled, tokensMatch, WEBHOOK_TOKEN_HEADER } from '@/lib/webhook-secret';
 import { isValidTrayUuid, lengthToWeight, classifyTrayState, isActivePrintState } from '@/lib/webhook-helpers';
+import { trayCarriesSpoolSerial } from '@/lib/creality';
 import { applyLocationSync } from '@/lib/spool-location';
 
 /**
@@ -57,20 +58,35 @@ export async function POST(request: NextRequest) {
     // Resolve entity_id → unique_id for tray matching.
     // Spool assignments are stored by unique_id (stable across entity renames),
     // but HA automations send entity_ids. This mapping bridges the two.
-    let entityIdToUniqueId: Map<string, string> | null = null;
-    const resolveToUniqueId = async (entityId: string): Promise<string> => {
-      if (!entityIdToUniqueId) {
+    let trayRegistry: Map<string, { uniqueId: string; platform: string }> | null = null;
+    const loadTrayRegistry = async () => {
+      if (!trayRegistry) {
         try {
           const haClient = await HomeAssistantClient.fromConnection();
           if (haClient) {
-            entityIdToUniqueId = await haClient.getEntityIdToUniqueIdMap();
+            trayRegistry = await haClient.getTrayEntityRegistry();
           }
         } catch (err) {
           console.warn('Could not fetch entity registry for unique_id mapping:', err);
         }
-        if (!entityIdToUniqueId) entityIdToUniqueId = new Map();
+        if (!trayRegistry) trayRegistry = new Map();
       }
-      return entityIdToUniqueId.get(entityId) || entityId;
+      return trayRegistry;
+    };
+    const resolveToUniqueId = async (entityId: string): Promise<string> => {
+      return (await loadTrayRegistry()).get(entityId)?.uniqueId || entityId;
+    };
+
+    /**
+     * Whether a tray's `tray_uuid` may be treated as a per-spool serial.
+     *
+     * Backstop for installs still running automations generated before Creality
+     * stopped sending its material-type code as a tray_uuid: acting on one
+     * auto-assigns whichever spool last carried that code. See
+     * trayCarriesSpoolSerial for the unknown-platform behaviour.
+     */
+    const traySupportsSerial = async (entityId: string): Promise<boolean> => {
+      return trayCarriesSpoolSerial((await loadTrayRegistry()).get(entityId)?.platform);
     };
 
     // Wire up the resolver so all SpoolmanClient write paths defensively
@@ -156,11 +172,13 @@ export async function POST(request: NextRequest) {
       console.log(`Deducted ${weightToDeduct.toFixed(2)}g${deductionNote} from spool #${matchedSpool.id} (${matchedSpool.filament.name})`);
 
       // Store the spool serial/RFID if we have a valid one
-      // This enables future auto-matching when the same spool is reinserted
-      // For Bambu: tray_uuid is the spool serial (unique per physical spool)
-      // For Creality: rfid is a numeric RFID tag ID
+      // This enables future auto-matching when the same spool is reinserted.
+      // Bambu only: tray_uuid is the spool serial, unique per physical spool.
+      // Creality sends an empty tray_uuid on purpose — its 'rfid' attribute is a
+      // material-type code shared by every spool of that material, so storing it
+      // would auto-assign the wrong spool later (see src/lib/creality.ts).
       let tagStored = false;
-      if (isValidTrayUuid(tray_uuid)) {
+      if (isValidTrayUuid(tray_uuid) && await traySupportsSerial(active_tray_id)) {
         // Rewrite unless the stored value is already byte-identical to what we
         // would write. Matching is normalized elsewhere (see normalizeTag), but
         // this check must stay exact: a tag that is normalized-equal yet stored
@@ -357,7 +375,7 @@ export async function POST(request: NextRequest) {
 
       // Tray has filament - try to auto-match by spool serial number
       // Uses the `tag` field (stored on first spool_usage)
-      if (isValidTrayUuid(tray_uuid)) {
+      if (isValidTrayUuid(tray_uuid) && await traySupportsSerial(tray_entity_id)) {
         const matchedSpool = await client.findSpoolByTag(tray_uuid);
 
         if (matchedSpool) {

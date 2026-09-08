@@ -591,6 +591,8 @@ ${trayEntityIds.map(id => `        - ${id}`).join('\n')}
  * - Uses used_material_length (cm) instead of print_weight * progress
  * - Uses 'selected' attribute (0/1) instead of 'active' for tray detection
  * - CFS slot attributes: name, color_hex, type, rfid (vs Bambu's name, color, type, tray_uuid)
+ * - No per-spool serial: 'rfid' is a material-type code, so no tray_uuid is sent
+ *   and serial auto-matching is off for Creality (see src/lib/creality.ts)
  */
 function generateCrealityAutomationsYaml(
   prefix: string,
@@ -681,7 +683,12 @@ function generateCrealityAutomationsYaml(
       {% endif %}
     tray_sensor: "${trayEntityLookup}"
     tray_usage_cm: "{{ states('sensor.spoolmansync_${prefix}_filament_usage_meter') | float(0) | round(2) }}"
-    tray_uuid: "{{ state_attr(tray_sensor, 'rfid') | default('') }}"
+    # Creality's 'rfid' attribute is a MATERIAL-TYPE code (PLA 00001, PETG 00003,
+    # ...), shared by every spool of that material — not a per-spool serial. It is
+    # logged for diagnostics only and deliberately NOT sent as tray_uuid; doing so
+    # made SpoolmanSync auto-assign whichever spool last carried that code. See
+    # src/lib/creality.ts.
+    material_code: "{{ state_attr(tray_sensor, 'rfid') | default('') }}"
     material: "{{ state_attr(tray_sensor, 'type') | default('') }}"
     name: "{{ state_attr(tray_sensor, 'name') | default('') }}"
     color: "{{ state_attr(tray_sensor, 'color_hex') | default('') }}"
@@ -714,13 +721,14 @@ function generateCrealityAutomationsYaml(
                           Sensor: {{ tray_sensor }} |
                           Spool: {{ name }} ({{ material }}) |
                           Length used: {{ tray_usage_cm }}cm |
-                          RFID: {{ tray_uuid }}
+                          Material code: {{ material_code }}
                         level: info
                     - action: rest_command.spoolmansync_update_spool
                       data:
                         filament_name: "{{ name }}"
                         filament_material: "{{ material }}"
-                        filament_tray_uuid: "{{ tray_uuid }}"
+                        # Creality reports no per-spool serial — see material_code above.
+                        filament_tray_uuid: ""
                         filament_used_length: "{{ tray_usage_cm }}"
                         filament_color: "{{ color }}"
                         filament_active_tray_id: "{{ tray_sensor }}"
@@ -792,13 +800,14 @@ function generateCrealityAutomationsYaml(
                           Sensor: {{ tray_sensor }} |
                           Spool: {{ name }} ({{ material }}) |
                           Length used: {{ tray_usage_cm }}cm |
-                          RFID: {{ tray_uuid }}
+                          Material code: {{ material_code }}
                         level: info
                     - action: rest_command.spoolmansync_update_spool
                       data:
                         filament_name: "{{ name }}"
                         filament_material: "{{ material }}"
-                        filament_tray_uuid: "{{ tray_uuid }}"
+                        # Creality reports no per-spool serial — see material_code above.
+                        filament_tray_uuid: ""
                         filament_used_length: "{{ tray_usage_cm }}"
                         filament_color: "{{ color }}"
                         filament_active_tray_id: "{{ tray_sensor }}"
@@ -863,7 +872,8 @@ ${trayEntityIds.map(id => `        - ${id}`).join('\n')}
            trigger.to_state.attributes.get('name', '') != trigger.from_state.attributes.get('name', '') }}
   variables:
     tray_entity_id: "{{ trigger.entity_id }}"
-    tray_uuid: "{{ state_attr(trigger.entity_id, 'rfid') | default('') }}"
+    # Material-type code, logged for diagnostics only — never a spool serial.
+    material_code: "{{ state_attr(trigger.entity_id, 'rfid') | default('') }}"
     name: "{{ state_attr(trigger.entity_id, 'name') | default('') }}"
     material: "{{ state_attr(trigger.entity_id, 'type') | default('') }}"
     color: "{{ state_attr(trigger.entity_id, 'color_hex') | default('') }}"
@@ -873,12 +883,14 @@ ${trayEntityIds.map(id => `        - ${id}`).join('\n')}
         message: >-
           SPOOLMANSYNC TRAY CHANGE DETECTED (Creality) | {{ tray_entity_id }} |
           Name: {{ name }} | Material: {{ material }} |
-          RFID: {{ tray_uuid }} | Color: {{ color }}
+          Material code: {{ material_code }} | Color: {{ color }}
         level: info
     - action: rest_command.spoolmansync_tray_change
       data:
         tray_entity_id: "{{ tray_entity_id }}"
-        tray_uuid: "{{ tray_uuid }}"
+        # Empty on purpose: no per-spool serial exists for Creality, so serial
+        # auto-matching stays off rather than matching on a material code.
+        tray_uuid: ""
         name: "{{ name }}"
         material: "{{ material }}"
         color: "{{ color }}"

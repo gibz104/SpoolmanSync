@@ -393,3 +393,95 @@ describe('generateHAConfig — issue #77 (empty-string blips must not zero the u
     }
   });
 });
+
+/**
+ * Creality's CFS `rfid` attribute is a material-type code (PLA 00001,
+ * PETG 00003, ...) shared by every spool of that material, not a per-spool
+ * serial. Sending it as tray_uuid made SpoolmanSync auto-assign whichever spool
+ * last carried that code, and permanently flagged correct assignments as
+ * "possible wrong spool". Bambu's tray_uuid IS a per-spool serial and must keep
+ * flowing.
+ */
+describe('generateHAConfig — tray_uuid is Bambu-only', () => {
+  type Automation = {
+    id: string;
+    variables: Record<string, string>;
+    actions: unknown[];
+  };
+
+  /** A CFS printer with real slots (the external-only fixture has none). */
+  function cfsPrinter(): HAPrinter {
+    return {
+      brand: 'creality',
+      entity_id: 'sensor.k2_print_status',
+      name: 'K2 Plus',
+      state: 'idle',
+      prefix: 'k2',
+      ams_units: [
+        {
+          entity_id: 'sensor.k2_cfs_1',
+          name: 'CFS 1',
+          ams_number: 1,
+          trays: [
+            { entity_id: 'sensor.k2_cfs_1_slot_1', unique_id: 'k2_cfs_1_slot_1', tray_number: 1 },
+            { entity_id: 'sensor.k2_cfs_1_slot_2', unique_id: 'k2_cfs_1_slot_2', tray_number: 2 },
+          ],
+        },
+      ],
+      external_spools: [],
+      print_progress_entity: 'sensor.k2_print_progress',
+      used_material_entity: 'sensor.k2_used_material_length',
+    };
+  }
+
+  function automationsFor(printer: HAPrinter): Automation[] {
+    const { automationsYaml } = generateHAConfig([printer], 'http://hook', 'http://hook');
+    return parseYaml(automationsYaml) as Automation[];
+  }
+
+  /** Every `data:` payload sent to a rest_command, at any nesting depth. */
+  function restCommandPayloads(node: unknown): Record<string, unknown>[] {
+    if (Array.isArray(node)) return node.flatMap(restCommandPayloads);
+    if (node === null || typeof node !== 'object') return [];
+    const record = node as Record<string, unknown>;
+    const found = typeof record.action === 'string'
+      && record.action.startsWith('rest_command.spoolmansync_')
+      && record.data && typeof record.data === 'object'
+      ? [record.data as Record<string, unknown>]
+      : [];
+    return [...found, ...Object.values(record).flatMap(restCommandPayloads)];
+  }
+
+  it('Creality sends an empty tray_uuid, so serial auto-matching stays off', () => {
+    for (const printer of [cfsPrinter(), crealityPrinter()]) {
+      const payloads = automationsFor(printer).flatMap(a => restCommandPayloads(a.actions));
+      expect(payloads.length, printer.prefix).toBeGreaterThan(0);
+
+      for (const payload of payloads) {
+        const sent = 'tray_uuid' in payload ? payload.tray_uuid : payload.filament_tray_uuid;
+        expect(sent, `${printer.prefix}: ${JSON.stringify(payload)}`).toBe('');
+      }
+    }
+  });
+
+  it('Creality still logs the material code for diagnostics', () => {
+    for (const printer of [cfsPrinter(), crealityPrinter()]) {
+      const automations = automationsFor(printer);
+      const usesRfid = automations.filter(a => a.variables?.material_code?.includes("'rfid'"));
+      expect(usesRfid.length, printer.prefix).toBeGreaterThan(0);
+      // The old name must be gone: leaving it would put a material code back
+      // into the webhook payload the moment someone reuses the variable.
+      expect(automations.some(a => 'tray_uuid' in (a.variables ?? {})), printer.prefix).toBe(false);
+    }
+  });
+
+  it('Bambu keeps sending its real per-spool serial', () => {
+    const payloads = automationsFor(bambuPrinter()).flatMap(a => restCommandPayloads(a.actions));
+    expect(payloads.length).toBeGreaterThan(0);
+
+    for (const payload of payloads) {
+      const sent = 'tray_uuid' in payload ? payload.tray_uuid : payload.filament_tray_uuid;
+      expect(sent, JSON.stringify(payload)).toBe('{{ tray_uuid }}');
+    }
+  });
+});

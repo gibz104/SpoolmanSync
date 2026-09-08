@@ -145,6 +145,11 @@ export async function GET() {
         console.warn('Location label reconcile failed (non-fatal):', err);
       }
 
+      // Opt-out for tags whose reported color doesn't describe the physical
+      // spool (issue #79). Read once, not per tray.
+      const ignoreColorSetting = await prisma.settings.findUnique({ where: { key: 'ignore_color_mismatch' } });
+      const ignoreColor = ignoreColorSetting?.value === 'true';
+
       // Enrich printer data with spool info and mismatch detection
       // Match by unique_id (stable across entity renames)
       for (const printer of printers) {
@@ -156,7 +161,7 @@ export async function GET() {
             if (assignedSpool) {
               trayRecord.assigned_spool = assignedSpool;
 
-              const mismatch = detectTrayMismatch(tray, assignedSpool);
+              const mismatch = detectTrayMismatch(tray, assignedSpool, { brand: printer.brand, ignoreColor });
               if (mismatch) {
                 trayRecord.mismatch = mismatch;
               }

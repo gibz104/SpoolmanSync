@@ -38,7 +38,7 @@ Works with filament from any vendor (Polymaker, Sunlu, Elegoo, Hatchbox, eSUN, B
 
 Matching works by:
 - Manual tray assignment via the web UI (works for all vendors)
-- RFID auto-match using Bambu `tray_uuid` or Creality `rfid` for repeat swaps
+- RFID auto-match using Bambu `tray_uuid` for repeat swaps (Bambu only — Creality exposes no per-spool identifier)
 - QR code / NFC tag lookup for any vendor
 
 ## Docs

@@ -46,6 +46,16 @@ describe('normalizeHexColor', () => {
     expect(normalizeHexColor(null)).toBe('');
     expect(normalizeHexColor('')).toBe('');
   });
+
+  it('treats an unrecognisable value as unknown rather than truncating it', () => {
+    // Truncating invents a colour that can never match, so the mismatch banner
+    // could never be cleared. Creality's 7-char form is decoded upstream (see
+    // normalizeCrealityColorHex); if one ever reaches here it must not compare.
+    expect(normalizeHexColor('#0ffffff')).toBe('');
+    expect(normalizeHexColor('#fff')).toBe('');
+    expect(normalizeHexColor('not-a-color')).toBe('');
+    expect(normalizeHexColor('#042f56ffff')).toBe('');
+  });
 });
 
 describe('baseMaterialToken', () => {
@@ -132,5 +142,63 @@ describe('detectTrayMismatch — still catches genuine mismatches', () => {
 
   it('both', () => {
     expect(detectTrayMismatch(tray(), spool('ABS', 'ff0000'))?.type).toBe('both');
+  });
+});
+
+/**
+ * Creality exposes no per-spool serial, so gating on one would disable the check
+ * entirely for those printers (issue #79). The trust question is answered by
+ * brand instead: Bambu requires a serial, Creality always compares.
+ */
+describe('detectTrayMismatch — brand decides whether a serial is required', () => {
+  const noSerial = { tray_uuid: undefined, name: 'Hyper PLA', material: 'PLA', color: 'ffffff' };
+
+  it('Creality compares without a serial', () => {
+    const m = detectTrayMismatch(tray(noSerial), spool('PETG', 'ffffff'), { brand: 'creality' });
+    expect(m?.type).toBe('material');
+  });
+
+  it('Bambu still skips a tray with no serial', () => {
+    // Its material/color came from Bambu Studio, not a tag.
+    expect(detectTrayMismatch(tray(noSerial), spool('PETG', 'ffffff'), { brand: 'bambu_lab' })).toBeNull();
+    expect(detectTrayMismatch(
+      tray({ ...noSerial, tray_uuid: '0000000000000000' }), spool('PETG', 'ffffff'), { brand: 'bambu_lab' },
+    )).toBeNull();
+  });
+
+  it('defaults to the Bambu rule when no brand is given', () => {
+    expect(detectTrayMismatch(tray(noSerial), spool('PETG', 'ffffff'))).toBeNull();
+  });
+
+  it('Creality still skips empty slots', () => {
+    expect(detectTrayMismatch(
+      tray({ ...noSerial, name: 'Empty' }), spool('PETG', 'ffffff'), { brand: 'creality' },
+    )).toBeNull();
+  });
+
+  it('a Creality slot that agrees does not warn', () => {
+    expect(detectTrayMismatch(tray(noSerial), spool('PLA', 'ffffff'), { brand: 'creality' })).toBeNull();
+  });
+});
+
+/**
+ * Opt-out for tags whose color doesn't describe the physical spool. No Spoolman
+ * value can ever match one, so without this the warning is unclearable (#79).
+ */
+describe('detectTrayMismatch — ignoreColor', () => {
+  it('drops a color-only mismatch to no warning at all', () => {
+    expect(detectTrayMismatch(tray(), spool('PLA', 'ff0000'))?.type).toBe('color');
+    expect(detectTrayMismatch(tray(), spool('PLA', 'ff0000'), { ignoreColor: true })).toBeNull();
+  });
+
+  it('keeps warning on material, and downgrades "both" to "material"', () => {
+    expect(detectTrayMismatch(tray(), spool('ABS', 'ff0000'))?.type).toBe('both');
+    expect(detectTrayMismatch(tray(), spool('ABS', 'ff0000'), { ignoreColor: true })?.type).toBe('material');
+  });
+
+  it('applies to Creality too', () => {
+    const crealityTray = tray({ tray_uuid: undefined, material: 'PETG', color: 'ffffff' });
+    expect(detectTrayMismatch(crealityTray, spool('PETG', '00ff00'), { brand: 'creality' })?.type).toBe('color');
+    expect(detectTrayMismatch(crealityTray, spool('PETG', '00ff00'), { brand: 'creality', ignoreColor: true })).toBeNull();
   });
 });

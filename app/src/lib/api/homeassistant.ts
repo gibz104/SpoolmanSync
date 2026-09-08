@@ -9,6 +9,7 @@
 
 import prisma from '@/lib/db';
 import WebSocket from 'ws';
+import { normalizeCrealityColorHex } from '@/lib/creality';
 
 export interface HAState {
   entity_id: string;
@@ -81,7 +82,8 @@ export interface HATray {
   name?: string;  // Filament name from RFID (e.g., "Matte Dark Blue")
   color?: string;
   material?: string;
-  tray_uuid?: string;  // Spool serial number (unique per physical spool)
+  tray_uuid?: string;  // Spool serial number (unique per physical spool). Bambu only —
+                       // Creality exposes no per-spool identifier (see src/lib/creality.ts).
   remaining_weight?: number;
 }
 
@@ -1015,9 +1017,10 @@ export class HomeAssistantClient {
           unique_id: slotEntity.unique_id,
           tray_number: slotNum,
           name: attrs.name as string,
-          color: (attrs.color_hex as string)?.replace('#', ''),
+          color: normalizeCrealityColorHex(attrs.color_hex),
           material: attrs.type as string,
-          tray_uuid: attrs.rfid != null ? String(attrs.rfid) : undefined,
+          // Deliberately NO tray_uuid: the slot's `rfid` attribute is Creality's
+          // material-type code, not a per-spool serial. See src/lib/creality.ts.
         });
       }
 
@@ -1054,9 +1057,10 @@ export class HomeAssistantClient {
           tray_number: 0,
           is_external: true,
           name: attrs.name as string,
-          color: (attrs.color_hex as string)?.replace('#', ''),
+          color: normalizeCrealityColorHex(attrs.color_hex),
           material: attrs.type as string,
-          tray_uuid: attrs.rfid != null ? String(attrs.rfid) : undefined,
+          // Deliberately NO tray_uuid: the slot's `rfid` attribute is Creality's
+          // material-type code, not a per-spool serial. See src/lib/creality.ts.
         });
       }
 
@@ -1089,12 +1093,24 @@ export class HomeAssistantClient {
    * Used by the webhook handler to convert entity_ids to stable unique_ids.
    */
   async getEntityIdToUniqueIdMap(): Promise<Map<string, string>> {
+    const registry = await this.getTrayEntityRegistry();
+    return new Map([...registry].map(([entityId, { uniqueId }]) => [entityId, uniqueId]));
+  }
+
+  /**
+   * entity_id → { unique_id, platform } for the supported printer integrations.
+   *
+   * Callers that need the platform as well as the unique_id must use this rather
+   * than pairing getEntityIdToUniqueIdMap() with a second lookup: each call opens
+   * its own WebSocket connection, and the webhook runs on every tray change.
+   */
+  async getTrayEntityRegistry(): Promise<Map<string, { uniqueId: string; platform: string }>> {
     const supportedPlatforms = new Set(['bambu_lab', 'ha_creality_ws']);
     const { entities } = await this.getEntityAndDeviceRegistry();
-    const map = new Map<string, string>();
+    const map = new Map<string, { uniqueId: string; platform: string }>();
     for (const entity of entities) {
       if (supportedPlatforms.has(entity.platform)) {
-        map.set(entity.entity_id, entity.unique_id);
+        map.set(entity.entity_id, { uniqueId: entity.unique_id, platform: entity.platform });
       }
     }
     return map;

@@ -38,6 +38,7 @@ interface Settings {
   } | null;
   spoolman: { url: string; connected: boolean } | null;
   neverAutoClearTray?: boolean;
+  ignoreColorMismatch?: boolean;
   webhookConfigured?: boolean;
 }
 
@@ -98,6 +99,7 @@ function SettingsContent() {
 
   // Sync behavior settings
   const [neverAutoClearTray, setNeverAutoClearTray] = useState(false);
+  const [ignoreColorMismatch, setIgnoreColorMismatch] = useState(false);
   const [syncSpoolmanLocation, setSyncSpoolmanLocation] = useState(false);
   // Optional "holding pen" for unassigned spools. Empty = clear the location
   // (the original behavior). Only has any effect while location sync is on.
@@ -215,6 +217,9 @@ function SettingsContent() {
       }
       if (data.showSpoolLocation !== undefined) {
         setShowSpoolLocation(data.showSpoolLocation);
+      }
+      if (data.ignoreColorMismatch !== undefined) {
+        setIgnoreColorMismatch(data.ignoreColorMismatch);
       }
       if (data.neverAutoClearTray !== undefined) {
         setNeverAutoClearTray(data.neverAutoClearTray);
@@ -1319,6 +1324,37 @@ function SettingsContent() {
                       </Label>
                       <p className="text-xs text-muted-foreground">
                         When enabled, SpoolmanSync will not remove a spool from a tray when the printer briefly reports it empty. Useful for LAN-only setups where the AMS occasionally reports false empty states.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-3">
+                    <Checkbox
+                      id="ignore-color-mismatch"
+                      checked={ignoreColorMismatch}
+                      onCheckedChange={async (checked) => {
+                        const enabled = checked === true;
+                        setIgnoreColorMismatch(enabled);
+                        try {
+                          const res = await fetch('/api/settings', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ type: 'ignore_color_mismatch', enabled }),
+                          });
+                          if (!res.ok) throw new Error();
+                          toast.success(enabled ? 'Spool warnings now compare material only' : 'Spool warnings compare material and color again');
+                        } catch {
+                          setIgnoreColorMismatch(!enabled);
+                          toast.error('Failed to save setting');
+                        }
+                      }}
+                    />
+                    <div>
+                      <Label htmlFor="ignore-color-mismatch" className="text-sm font-medium cursor-pointer">
+                        Ignore color in spool mismatch warnings
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        The &quot;possible wrong spool&quot; warning compares material only. Useful when your RFID tags report a color the physical spool doesn&apos;t have, which is common with third-party Creality tags.
                       </p>
                     </div>
                   </div>

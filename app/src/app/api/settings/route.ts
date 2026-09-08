@@ -51,6 +51,7 @@ export async function GET() {
       const qrBaseUrlSetting = await prisma.settings.findUnique({ where: { key: 'qr_base_url' } });
       const showLocationSetting = await prisma.settings.findUnique({ where: { key: 'show_spool_location' } });
       const neverAutoClearSetting = await prisma.settings.findUnique({ where: { key: 'never_auto_clear_tray' } });
+      const ignoreColorSetting = await prisma.settings.findUnique({ where: { key: 'ignore_color_mismatch' } });
       const syncLocationSetting = await prisma.settings.findUnique({ where: { key: 'sync_spoolman_location' } });
       const unassignedLocationSetting = await prisma.settings.findUnique({ where: { key: UNASSIGNED_LOCATION_KEY } });
       const webhookAuthEnabled = await isWebhookAuthEnabled();
@@ -70,6 +71,7 @@ export async function GET() {
         qrBaseUrl: qrBaseUrlSetting?.value || '',
         showSpoolLocation: showLocationSetting?.value === 'true',
         neverAutoClearTray: neverAutoClearSetting?.value === 'true',
+        ignoreColorMismatch: ignoreColorSetting?.value === 'true',
         syncSpoolmanLocation: syncLocationSetting?.value === 'true',
         unassignedSpoolLocation: unassignedLocationSetting?.value ?? '',
         webhookConfigured: webhookAuthEnabled,
@@ -257,6 +259,7 @@ export async function GET() {
     const qrBaseUrlSetting = await prisma.settings.findUnique({ where: { key: 'qr_base_url' } });
     const showLocationSetting = await prisma.settings.findUnique({ where: { key: 'show_spool_location' } });
     const neverAutoClearSetting = await prisma.settings.findUnique({ where: { key: 'never_auto_clear_tray' } });
+    const ignoreColorSetting = await prisma.settings.findUnique({ where: { key: 'ignore_color_mismatch' } });
     const syncLocationSetting = await prisma.settings.findUnique({ where: { key: 'sync_spoolman_location' } });
     const unassignedLocationSetting = await prisma.settings.findUnique({ where: { key: UNASSIGNED_LOCATION_KEY } });
     const webhookAuthEnabled = await isWebhookAuthEnabled();
@@ -272,6 +275,7 @@ export async function GET() {
       qrBaseUrl: qrBaseUrlSetting?.value || '',
       showSpoolLocation: showLocationSetting?.value === 'true',
       neverAutoClearTray: neverAutoClearSetting?.value === 'true',
+      ignoreColorMismatch: ignoreColorSetting?.value === 'true',
       syncSpoolmanLocation: syncLocationSetting?.value === 'true',
       unassignedSpoolLocation: unassignedLocationSetting?.value ?? '',
       webhookConfigured: webhookAuthEnabled,
@@ -400,6 +404,19 @@ export async function POST(request: NextRequest) {
       await prisma.settings.upsert({
         where: { key: 'never_auto_clear_tray' },
         create: { key: 'never_auto_clear_tray', value: String(enabled) },
+        update: { value: String(enabled) },
+      });
+      return NextResponse.json({ success: true });
+    }
+
+    if (type === 'ignore_color_mismatch') {
+      // Compare material only on the dashboard's "possible wrong spool" check.
+      // For tags that report a color the physical spool doesn't have, no Spoolman
+      // value can ever match, so the warning is otherwise unclearable (issue #79).
+      const enabled = body.enabled === true;
+      await prisma.settings.upsert({
+        where: { key: 'ignore_color_mismatch' },
+        create: { key: 'ignore_color_mismatch', value: String(enabled) },
         update: { value: String(enabled) },
       });
       return NextResponse.json({ success: true });

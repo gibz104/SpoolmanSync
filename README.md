@@ -75,7 +75,7 @@ SpoolmanSync discovers your printers and their AMS/CFS trays from Home Assistant
 
 Spool matching works in three ways:
 - **Manual assignment** (all vendors) — click a tray, pick a spool
-- **RFID auto-match** (Bambu spools with tags, Creality CFS spools with RFID) — remembers which physical spool is which for future swaps
+- **RFID auto-match** (Bambu Lab spools with tags) — remembers which physical spool is which for future swaps. Creality CFS reports a material-type code rather than a per-spool serial, so Creality spools are matched by their tray assignment instead
 - **QR code / NFC** (any vendor) — scan printed QR labels or NFC stickers with your phone to assign
 
 ## Low Stock Alerts
