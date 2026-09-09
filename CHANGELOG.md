@@ -5,6 +5,17 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.11] - 2026-09-08
+
+> Upgrade note: re-run Auto-configure / regenerate your Home Assistant automations to pick up the Creality fixes below.
+
+### Fixed
+- Creality CFS spool colors were being read wrong, which made the dashboard's "possible wrong spool" warning show up on nearly every Creality spool and stay there for good (#79). Creality reports color as `#0rrggbb`, where the real RGB value is the last six characters rather than the first six. Every color except black was compared as a different color, so no value you could enter in Spoolman would ever match.
+- Creality spools are no longer matched by RFID serial, because the CFS does not report one. Its `rfid` attribute is Creality's material type code (PLA is 00001, PETG is 00003), which every spool of that material shares. Treating it as a unique serial could auto-assign whichever spool last carried that code, and could move the code from one spool to another on each print. Serial matching is now Bambu Lab only. Creality spools are matched by their tray assignment instead, which is how SpoolmanSync tracks every other brand of filament. Installs still running older automations are covered without regenerating them.
+
+### Added
+- New "Ignore color in spool mismatch warnings" setting under Settings, in the Dashboard Display section. The warning then compares material only, which helps if your RFID tags report a color the physical spool does not actually have. This is common with third-party Creality tags.
+
 ## [1.6.10] - 2026-08-17
 
 ### Security
