@@ -422,7 +422,10 @@ function generateAutomationsYaml(
                           SPOOLMANSYNC TRAY CHANGE (no usage logged) | Old: {{ old_tray }} -> New: {{ new_tray }} |
                           Weight: {{ tray_weight }}g |
                           Reason: {{ 'no weight to log' if tray_weight < 0.01 else 'tray sensor not found' }}
-                        level: debug
+                        # Warn when real grams are discarded: we cannot identify
+                        # the spool so we cannot bill anyone, but the loss must
+                        # be visible rather than silent (#78).
+                        level: "{{ 'warning' if tray_weight >= 0.01 else 'debug' }}"
                     - action: utility_meter.calibrate
                       target:
                         entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter
@@ -498,9 +501,10 @@ function generateAutomationsYaml(
                     message: >-
                       SPOOLMANSYNC PRINT END (skipped) | Tray: {{ tray_composite }} | Weight: {{ tray_weight }}g |
                       Reason: {{ 'no tray in helper' if tray_composite < 0 else 'no weight' }}
-                    # info, not warning: with 'offline' allowed as a from_state
-                    # this fires benignly on every printer power-on (meter is 0).
-                    level: info
+                    # Quiet when the meter is empty: with 'offline' allowed as a
+                    # from_state this fires benignly on every printer power-on.
+                    # Warn when real grams are discarded instead (#78).
+                    level: "{{ 'warning' if tray_weight >= 0.01 else 'info' }}"
             # Always reset meter after print
             - action: utility_meter.calibrate
               target:
@@ -513,12 +517,57 @@ function generateAutomationsYaml(
                 level: info
 
         # =====================================================================
-        # PRINTER OFFLINE - Reset meter so no phantom weight survives power-off
+        # PRINTER OFFLINE - Bank the usage, THEN reset the meter
+        #
+        # The reset is what keeps #66 safe (a power-on print_end must find an
+        # empty meter), but resetting ALONE silently destroyed every gram the
+        # printer had used before it dropped off: a >2min network blip mid-print
+        # cost one user 105g (#78). Deducting first keeps both the guard and the
+        # grams.
+        #
+        # Deducting works even with the printer away: the tray comes from the
+        # input_number helper, not from the printer, and the webhook needs only
+        # that plus the weight. The filament name/color attributes read empty
+        # here, which is harmless (they are logging-only for spool_usage).
+        #
+        # REQUIRES always_available on the utility_meter. Without it the meter
+        # goes unavailable along with its source and the float(0) fallback would
+        # read it as 0g here, deducting nothing. See generateConfigurationAdditions.
         # =====================================================================
         - conditions:
             - condition: template
               value_template: "{{ trigger.id == 'offline' }}"
           sequence:
+            - choose:
+                - conditions:
+                    - condition: template
+                      value_template: "{{ tray_composite >= 0 and tray_weight >= 0.01 and tray_sensor != '' }}"
+                  sequence:
+                    - action: system_log.write
+                      data:
+                        message: >-
+                          SPOOLMANSYNC OFFLINE FLUSH | Tray {{ tray_composite }} |
+                          Sensor: {{ tray_sensor }} |
+                          Weight used: {{ tray_weight }}g
+                        level: info
+                    - action: rest_command.spoolmansync_update_spool
+                      data:
+                        filament_name: "{{ name }}"
+                        filament_material: "{{ material }}"
+                        filament_tray_uuid: "{{ tray_uuid }}"
+                        filament_used_weight: "{{ tray_weight }}"
+                        filament_color: "{{ color }}"
+                        filament_active_tray_id: "{{ tray_sensor }}"
+              default:
+                - action: system_log.write
+                  data:
+                    message: >-
+                      SPOOLMANSYNC OFFLINE FLUSH (skipped) | Tray: {{ tray_composite }} | Weight: {{ tray_weight }}g |
+                      Reason: {{ 'no tray in helper' if tray_composite < 0 else 'no weight' if tray_weight < 0.01 else 'tray sensor not found' }}
+                    # Warn only when grams are actually discarded. With an empty
+                    # meter this fires benignly every time the printer is shut
+                    # off, so that case stays quiet.
+                    level: "{{ 'warning' if tray_weight >= 0.01 else 'info' }}"
             - action: utility_meter.calibrate
               target:
                 entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter
@@ -747,7 +796,7 @@ function generateCrealityAutomationsYaml(
                           SPOOLMANSYNC TRAY CHANGE (Creality, no usage logged) | Old: {{ old_tray }} -> New: {{ new_tray }} |
                           Length: {{ tray_usage_cm }}cm |
                           Reason: {{ 'no length to log' if tray_usage_cm < 0.01 else 'slot sensor not found' }}
-                        level: debug
+                        level: "{{ 'warning' if tray_usage_cm >= 0.01 else 'debug' }}"
                     - action: utility_meter.calibrate
                       target:
                         entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter
@@ -817,9 +866,9 @@ function generateCrealityAutomationsYaml(
                     message: >-
                       SPOOLMANSYNC PRINT END (Creality, skipped) | Tray: {{ tray_composite }} | Length: {{ tray_usage_cm }}cm |
                       Reason: {{ 'no tray in helper' if tray_composite < 0 else 'no length' }}
-                    # info, not warning: fires benignly on power-on now that
-                    # 'off'/'offline' are allowed as from_states.
-                    level: info
+                    # Quiet on a benign power-on (empty meter); warn when real
+                    # length is discarded (#78).
+                    level: "{{ 'warning' if tray_usage_cm >= 0.01 else 'info' }}"
             - action: utility_meter.calibrate
               target:
                 entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter
@@ -831,12 +880,41 @@ function generateCrealityAutomationsYaml(
                 level: info
 
         # =====================================================================
-        # PRINTER OFFLINE - Reset meter so no phantom weight survives power-off
+        # PRINTER OFFLINE - Bank the usage, THEN reset the meter. cm-based
+        # mirror of the Bambu path; see there for the full rationale (#78).
         # =====================================================================
         - conditions:
             - condition: template
               value_template: "{{ trigger.id == 'offline' }}"
           sequence:
+            - choose:
+                - conditions:
+                    - condition: template
+                      value_template: "{{ tray_composite >= 0 and tray_usage_cm >= 0.01 and tray_sensor != '' }}"
+                  sequence:
+                    - action: system_log.write
+                      data:
+                        message: >-
+                          SPOOLMANSYNC OFFLINE FLUSH (Creality) | Tray {{ tray_composite }} |
+                          Sensor: {{ tray_sensor }} |
+                          Length used: {{ tray_usage_cm }}cm
+                        level: info
+                    - action: rest_command.spoolmansync_update_spool
+                      data:
+                        filament_name: "{{ name }}"
+                        filament_material: "{{ material }}"
+                        # Creality reports no per-spool serial — see material_code above.
+                        filament_tray_uuid: ""
+                        filament_used_length: "{{ tray_usage_cm }}"
+                        filament_color: "{{ color }}"
+                        filament_active_tray_id: "{{ tray_sensor }}"
+              default:
+                - action: system_log.write
+                  data:
+                    message: >-
+                      SPOOLMANSYNC OFFLINE FLUSH (Creality, skipped) | Tray: {{ tray_composite }} | Length: {{ tray_usage_cm }}cm |
+                      Reason: {{ 'no tray in helper' if tray_composite < 0 else 'no length' if tray_usage_cm < 0.01 else 'tray sensor not found' }}
+                    level: "{{ 'warning' if tray_usage_cm >= 0.01 else 'info' }}"
             - action: utility_meter.calibrate
               target:
                 entity_id: sensor.spoolmansync_${prefix}_filament_usage_meter
@@ -1013,10 +1091,20 @@ function generateConfigurationAdditions(
   }).join('\n');
 
   // Build per-printer utility_meter entries
+  //
+  // always_available is REQUIRED, not cosmetic. By default a utility_meter goes
+  // unavailable whenever its source does, and the source (the usage template
+  // sensor) goes unavailable the moment the printer drops off. The automation
+  // reads the meter through a float(0) fallback, so an unavailable meter reads
+  // as 0g — which would make the offline flush deduct nothing (#78). With this
+  // set the meter keeps its value and stays readable while the printer is away.
+  // It does not change how the meter counts: accumulation still stops while the
+  // source is unavailable, and the gap is skipped rather than re-added (#75).
   const utilityMeterEntries = printerConfigs.map(p =>
     `  spoolmansync_${p.prefix}_filament_usage_meter:
     unique_id: spoolmansync-${p.prefix}-filament-usage-meter
-    source: sensor.spoolmansync_${p.prefix}_filament_usage`
+    source: sensor.spoolmansync_${p.prefix}_filament_usage
+    always_available: true`
   ).join('\n');
 
   // Build per-printer template sensor entries (filament usage + active tray)

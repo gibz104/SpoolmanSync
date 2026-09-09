@@ -249,7 +249,7 @@ describe('generateHAConfig — issue #75 follow-up (print end arriving via offli
     expect(automationsYaml).toContain('SPOOLMANSYNC METER RESET after print end');
   });
 
-  it('the skipped-flush log is info level (fires benignly on every power-on now)', () => {
+  it('the skipped-flush log stays quiet on a benign power-on, but warns if grams are lost', () => {
     for (const printer of [bambuPrinter(), crealityPrinter()]) {
       const { automationsYaml } = generateHAConfig([printer], 'http://hook', 'http://hook');
       const parsed = parseYaml(automationsYaml) as Array<{
@@ -265,7 +265,13 @@ describe('generateHAConfig — issue #75 follow-up (print end arriving via offli
         b.conditions[0].value_template.includes("trigger.id == 'print_end'"))!;
       const innerDefault = printEndBranch.sequence.find(s => s.default)!.default!;
       const skippedLog = innerDefault.find(a => a.data?.message?.includes('skipped'))!;
-      expect(skippedLog.data!.level, printer.prefix).toBe('info');
+      // Conditional, not a literal: an empty meter on power-on must stay 'info'
+      // (this branch fires every time a printer is switched on), while real
+      // discarded usage must be visible as a warning (#78).
+      const level = skippedLog.data!.level!;
+      expect(level, printer.prefix).toContain("'info'");
+      expect(level, printer.prefix).toContain("'warning'");
+      expect(level, printer.prefix).toMatch(/>=\s*0\.01/);
     }
   });
 });
@@ -482,6 +488,117 @@ describe('generateHAConfig — tray_uuid is Bambu-only', () => {
     for (const payload of payloads) {
       const sent = 'tray_uuid' in payload ? payload.tray_uuid : payload.filament_tray_uuid;
       expect(sent, JSON.stringify(payload)).toBe('{{ tray_uuid }}');
+    }
+  });
+});
+
+/**
+ * Issue #78: the offline branch zeroed the usage meter without deducting, so a
+ * network dropout longer than the 2-minute trigger delay silently destroyed
+ * every gram accumulated before it (105g for the reporter, reconciled against a
+ * physical weigh-in).
+ *
+ * The reset itself is load-bearing — it is what makes a power-on print_end find
+ * an empty meter (#66) — so the fix banks the usage first rather than removing
+ * it. These tests pin both halves: the flush must exist, and it must come
+ * BEFORE the calibrate.
+ */
+describe('generateHAConfig — issue #78 (offline must deduct before resetting)', () => {
+  type Action = {
+    action?: string;
+    data?: Record<string, unknown>;
+    choose?: Array<{ conditions: Array<{ value_template: string }>; sequence: Action[] }>;
+    default?: Action[];
+  };
+  type Automation = { id: string; actions: Array<{ choose?: Array<{ conditions: Array<{ value_template: string }>; sequence: Action[] }> }> };
+
+  function offlineBranch(printer: HAPrinter): Action[] {
+    const { automationsYaml } = generateHAConfig([printer], 'http://hook', 'http://hook');
+    const parsed = parseYaml(automationsYaml) as Automation[];
+    const automation = parsed.find(a => a.id === `spoolmansync_update_spool_${printer.prefix}`)!;
+    const chooseAction = automation.actions.find(a => a.choose)!;
+    return chooseAction.choose!.find(b =>
+      b.conditions[0].value_template.includes("trigger.id == 'offline'"))!.sequence;
+  }
+
+  /** Flattened action list in execution order, descending into choose/default. */
+  function flatten(actions: Action[]): Action[] {
+    return actions.flatMap(a => [
+      a,
+      ...(a.choose ?? []).flatMap(c => flatten(c.sequence)),
+      ...flatten(a.default ?? []),
+    ]);
+  }
+
+  const printers: Array<[string, HAPrinter, string]> = [
+    ['bambu', bambuPrinter(), 'filament_used_weight'],
+    ['creality', crealityPrinter(), 'filament_used_length'],
+  ];
+
+  it.each(printers)('%s: offline deducts the accumulated usage', (_l, printer, usageField) => {
+    const flush = flatten(offlineBranch(printer)).find(a => a.action === 'rest_command.spoolmansync_update_spool');
+    expect(flush, printer.prefix).toBeDefined();
+    // The tray comes from the helper, so it resolves even with the printer away.
+    expect(flush!.data!.filament_active_tray_id).toBe('{{ tray_sensor }}');
+    expect(flush!.data![usageField]).toBeTruthy();
+  });
+
+  it.each(printers)('%s: the deduction happens BEFORE the meter is zeroed', (_l, printer) => {
+    const flat = flatten(offlineBranch(printer));
+    const flushAt = flat.findIndex(a => a.action === 'rest_command.spoolmansync_update_spool');
+    const resetAt = flat.findIndex(a => a.action === 'utility_meter.calibrate');
+    expect(flushAt, printer.prefix).toBeGreaterThanOrEqual(0);
+    expect(resetAt, printer.prefix).toBeGreaterThanOrEqual(0);
+    expect(flushAt, printer.prefix).toBeLessThan(resetAt);
+  });
+
+  it.each(printers)('%s: the reset is KEPT, so a power-on still finds an empty meter (#66)', (_l, printer) => {
+    const reset = flatten(offlineBranch(printer)).find(a => a.action === 'utility_meter.calibrate')!;
+    expect(reset, printer.prefix).toBeDefined();
+    expect(reset.data!.value).toBe('0');
+  });
+
+  it.each(printers)('%s: an unidentifiable tray warns instead of silently discarding', (_l, printer) => {
+    const skipped = flatten(offlineBranch(printer)).find(a =>
+      a.action === 'system_log.write' && String(a.data?.message).includes('skipped'))!;
+    expect(skipped, printer.prefix).toBeDefined();
+    const level = String(skipped.data!.level);
+    expect(level, printer.prefix).toContain("'warning'");
+    expect(level, printer.prefix).toMatch(/>=\s*0\.01/);
+  });
+
+  it('the meter stays readable while the printer is away (always_available)', () => {
+    // Without this the meter goes unavailable with its source and the float(0)
+    // fallback reads 0g, so the flush above would deduct nothing.
+    for (const printer of [bambuPrinter(), crealityPrinter()]) {
+      const { configurationAdditions } = generateHAConfig([printer], 'http://hook', 'http://hook');
+      const cfg = parseYaml(configurationAdditions) as {
+        utility_meter: Record<string, { always_available?: boolean; source: string }>;
+      };
+      const meter = cfg.utility_meter[`spoolmansync_${printer.prefix}_filament_usage_meter`];
+      expect(meter, printer.prefix).toBeDefined();
+      expect(meter.always_available, printer.prefix).toBe(true);
+    }
+  });
+
+  it('every reset-without-deduction path is now either flushed or warned about', () => {
+    // The root cause behind #66/#75/#77/#78 was zeroing the meter on paths that
+    // never deducted. Assert no calibrate is reachable without either a flush
+    // before it or a warning-capable log in the same branch.
+    for (const printer of [bambuPrinter(), crealityPrinter()]) {
+      const { automationsYaml } = generateHAConfig([printer], 'http://hook', 'http://hook');
+      const automations = parseYaml(automationsYaml) as Automation[];
+      const automation = automations.find(a => a.id === `spoolmansync_update_spool_${printer.prefix}`)!;
+      const chooseAction = automation.actions.find(a => a.choose)!;
+
+      for (const branch of chooseAction.choose!) {
+        const flat = flatten(branch.sequence);
+        if (!flat.some(a => a.action === 'utility_meter.calibrate')) continue;
+        const flushes = flat.some(a => a.action === 'rest_command.spoolmansync_update_spool');
+        const warns = flat.some(a =>
+          a.action === 'system_log.write' && String(a.data?.level).includes("'warning'"));
+        expect(flushes || warns, `${printer.prefix}: ${branch.conditions[0].value_template}`).toBe(true);
+      }
     }
   });
 });
