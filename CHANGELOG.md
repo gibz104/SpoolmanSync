@@ -5,6 +5,14 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.12] - 2026-09-09
+
+> Upgrade note: re-run Auto-configure / regenerate your Home Assistant automations, then **fully restart Home Assistant**. A reload is not enough this time, because the `utility_meter` definition itself changed.
+
+### Fixed
+- Filament used before a printer dropped off the network is no longer thrown away (#78). When a printer went offline for more than two minutes, the usage counter was reset to zero without ever deducting what it held, so everything used up to that point vanished. One user reconciled 105 g lost in a single overnight dropout against a physical weigh-in of the spool. The offline step now deducts the usage first and then resets. The reset is kept, because that is what stops a power-on from deducting the last print a second time.
+- Two other spots reset the counter without deducting, when a tray change or the end of a print could not work out which tray the filament belonged to. Those still reset, since holding on to grams we cannot attribute would only deduct them from the next spool, but they now log a warning instead of a debug message so the loss is visible instead of silent.
+
 ## [1.6.11] - 2026-09-08
 
 > Upgrade note: re-run Auto-configure / regenerate your Home Assistant automations to pick up the Creality fixes below.
