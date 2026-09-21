@@ -5,6 +5,12 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.13] - 2026-09-20
+
+### Fixed
+- Bambu Lab printers can be added in LAN mode again from the Add Printer dialog (#82). The form showed a blank, required "Advanced" text box that failed with "Advanced: required key not provided" no matter what was typed in it, so LAN printers could only be added from Home Assistant directly. Advanced is now a collapsible section holding its two real options, "Disable SSL Verification" and "Enable Firmware Update". Both start off, and most printers need neither.
+- LAN connection failures now show a readable message (for example, a rejected access code or an unreachable address) instead of a raw code like `cannot_connect_local_unknown`.
+
 ## [1.6.12] - 2026-09-09
 
 > Upgrade note: re-run Auto-configure / regenerate your Home Assistant automations, then **fully restart Home Assistant**. A reload is not enough this time, because the `utility_meter` definition itself changed.
