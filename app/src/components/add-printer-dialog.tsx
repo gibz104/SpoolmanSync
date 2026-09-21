@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -12,27 +12,26 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
+import {
+  type FlowFormValue,
+  type FlowFormValues,
+  type FlowSchemaField,
+  buildFlowUserInput,
+  fieldPath,
+  getFlowFieldPaths,
+  getFlowFormDefaults,
+  isBooleanField,
+  isSectionField,
+} from '@/lib/config-flow-form';
 
 interface ConfigFlowResult {
   flow_id: string;
   type: 'form' | 'create_entry' | 'abort' | 'external' | 'external_done' | 'menu';
   handler: string;
   step_id: string;
-  data_schema?: Array<{
-    name: string;
-    type?: string;
-    required?: boolean;
-    default?: any;
-    selector?: {
-      select?: {
-        options: Array<{ value: string; label: string }>;
-        translation_key?: string;
-        mode?: string;
-      };
-      text?: { type?: string };
-    };
-  }>;
+  data_schema?: FlowSchemaField[];
   errors?: Record<string, string>;
   description_placeholders?: Record<string, string>;
   title?: string;
@@ -58,7 +57,7 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
   const [loading, setLoading] = useState(false);
 
   // Form inputs for different steps
-  const [formData, setFormData] = useState<Record<string, string>>({});
+  const [formData, setFormData] = useState<FlowFormValues>({});
 
   // Resend verification code cooldown (60 seconds)
   const [resendCooldown, setResendCooldown] = useState(0);
@@ -118,19 +117,6 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
     }
     resetDialog();
     onOpenChange(false);
-  };
-
-  // Helper to extract default values from a form schema
-  const getDefaultFormData = (schema?: ConfigFlowResult['data_schema']): Record<string, string> => {
-    const defaults: Record<string, string> = {};
-    if (schema) {
-      schema.forEach(field => {
-        if (field.default !== undefined && field.default !== null) {
-          defaults[field.name] = String(field.default);
-        }
-      });
-    }
-    return defaults;
   };
 
   const handleBrandSelect = (brand: PrinterBrand) => {
@@ -220,7 +206,7 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
       }
 
       setFlowState(result);
-      setFormData(getDefaultFormData(result.data_schema));
+      setFormData(getFlowFormDefaults(result.data_schema));
       setStep('flow');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to start printer setup');
@@ -235,18 +221,9 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
     setLoading(true);
 
     try {
-      // SIMPLE RULE: Only send fields that are in the current form's data_schema
-      // HA config flows expect exactly the fields in the schema, nothing more
-      const currentSchemaFields = new Set(
-        flowState.data_schema?.map(f => f.name) || []
-      );
-
-      const userInput: Record<string, string> = {};
-      for (const [key, value] of Object.entries(formData)) {
-        if (currentSchemaFields.has(key) && value && value.trim() !== '') {
-          userInput[key] = value;
-        }
-      }
+      // Only send fields in the current form's data_schema, with sections
+      // nested as objects and booleans as real booleans (see config-flow-form.ts)
+      const userInput = buildFlowUserInput(flowState.data_schema, formData);
 
       const res = await fetch('/api/printers/setup', {
         method: 'POST',
@@ -299,8 +276,8 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
       const isVerificationPhaseTransition = result.errors?.base === 'verifyCode';
 
       // Also check if the form schema changed (different fields = different phase)
-      const previousFieldNames = flowState.data_schema?.map(f => f.name).sort().join(',') || '';
-      const currentFieldNames = result.data_schema?.map((f: { name: string }) => f.name).sort().join(',') || '';
+      const previousFieldNames = getFlowFieldPaths(flowState.data_schema).sort().join(',');
+      const currentFieldNames = getFlowFieldPaths(result.data_schema).sort().join(',');
       const formSchemaChanged = previousFieldNames !== currentFieldNames;
 
       const shouldShowErrors = hasErrors && (isSyntheticError || isSameStep) && !isVerificationPhaseTransition && !formSchemaChanged;
@@ -379,24 +356,12 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
 
           // If we have pre-filled host and access_code, auto-submit with defaults
           if (hasHostField && hasAccessCodeField) {
-            const autoInput: Record<string, unknown> = {};
-            for (const field of result.data_schema) {
-              // Handle 'advanced' field specially - it's a nested section requiring an object
-              if (field.name === 'advanced') {
-                autoInput[field.name] = {
-                  disable_ssl_verify: false,
-                  enable_firmware_update: false,
-                };
-              } else if (field.name === 'skip_local_mqtt') {
-                // In cloud mode, skip local MQTT connection test (it often times out)
-                autoInput[field.name] = true;
-              } else if (field.default !== undefined && field.default !== null) {
-                autoInput[field.name] = field.default;
-              } else {
-                // For required fields without defaults, use empty string
-                autoInput[field.name] = '';
-              }
+            const autoValues = getFlowFormDefaults(result.data_schema);
+            if (result.data_schema.some(f => f.name === 'skip_local_mqtt')) {
+              // In cloud mode, skip local MQTT connection test (it often times out)
+              autoValues.skip_local_mqtt = true;
             }
+            const autoInput = buildFlowUserInput(result.data_schema, autoValues);
 
             const autoRes = await fetch('/api/printers/setup', {
               method: 'POST',
@@ -421,7 +386,7 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
               } else if (autoResult.type === 'form' && autoResult.step_id !== 'error') {
                 // If there's another valid form, show it
                 setFlowState({ ...autoResult, errors: {} });
-                setFormData(getDefaultFormData(autoResult.data_schema));
+                setFormData(getFlowFormDefaults(autoResult.data_schema));
                 return;
               }
               // If step_id is 'error', fall through to show the original config form
@@ -464,15 +429,14 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
 
         // Initialize form data with defaults from new schema
         // Preserve existing values for fields that exist in new schema (for multi-phase forms)
-        const newDefaults = getDefaultFormData(result.data_schema);
+        const newDefaults = getFlowFormDefaults(result.data_schema);
         setFormData(prev => {
-          const newData: Record<string, string> = { ...newDefaults };
+          const newData: FlowFormValues = { ...newDefaults };
           // Keep values for fields that exist in new schema
-          if (result.data_schema) {
-            for (const field of result.data_schema) {
-              if (prev[field.name] && prev[field.name].trim() !== '') {
-                newData[field.name] = prev[field.name];
-              }
+          for (const path of getFlowFieldPaths(result.data_schema)) {
+            const value = prev[path];
+            if (typeof value === 'boolean' || (value !== undefined && value.trim() !== '')) {
+              newData[path] = value;
             }
           }
           return newData;
@@ -501,7 +465,7 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
     return lower === 'verifycode' || lower === 'verify_code';
   };
 
-  const handleInputChange = (name: string, value: string) => {
+  const handleInputChange = (name: string, value: FlowFormValue) => {
     setFormData((prev) => {
       const updated = { ...prev, [name]: value };
       // If user is typing in the verifyCode field, make sure newCode stays empty
@@ -535,7 +499,7 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
         body: JSON.stringify({
           action: 'continue',
           flowId: flowState.flow_id,
-          userInput: { [newCodeField.name]: 'true' },
+          userInput: { [newCodeField.name]: true },
         }),
       });
 
@@ -566,26 +530,68 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
     const hasVerifyCodeField = flowState.data_schema.some(f => isVerifyCodeField(f.name));
     const isVerificationForm = hasNewCodeTrigger && hasVerifyCodeField;
 
-    return flowState.data_schema.map((field) => {
+    const renderError = (name: string) =>
+      flowState.errors?.[name] && (
+        <p className="text-sm text-destructive">{translateErrorCode(flowState.errors[name])}</p>
+      );
+
+    const renderField = (field: FlowSchemaField, prefix?: string): ReactNode => {
+      const path = fieldPath(field.name, prefix);
+
       // Hide the newCode field - it's a trigger for requesting new codes, not user input
       // We only show the verifyCode field for entering the actual code
-      if (isNewCodeTriggerField(field.name)) {
+      if (!prefix && isNewCodeTriggerField(field.name)) {
         return null;
       }
+
+      // Sections (HA `type: 'expandable'`): a collapsible group submitted as a nested object
+      if (isSectionField(field)) {
+        return (
+          <details key={path} open={field.expanded} className="rounded-md border px-3 py-2">
+            <summary className="cursor-pointer text-sm font-medium">{formatFieldName(field.name)}</summary>
+            <div className="space-y-4 pt-3">
+              {field.schema!.map((child) => renderField(child, path))}
+            </div>
+            {renderError(field.name)}
+          </details>
+        );
+      }
+
+      // Boolean fields render as checkboxes and submit real booleans
+      if (isBooleanField(field)) {
+        return (
+          <div key={path} className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id={path}
+                checked={formData[path] === true}
+                onCheckedChange={(checked) => handleInputChange(path, checked === true)}
+              />
+              <Label htmlFor={path} className="font-normal">
+                {formatFieldName(field.name)}
+              </Label>
+            </div>
+            {renderError(field.name)}
+          </div>
+        );
+      }
+
       // Handle select fields
       if (field.selector?.select) {
-        const options = field.selector.select.options;
+        const options = field.selector.select.options.map((opt) =>
+          typeof opt === 'string' ? { value: opt, label: opt } : opt
+        );
         return (
-          <div key={field.name} className="space-y-2">
-            <Label htmlFor={field.name}>
+          <div key={path} className="space-y-2">
+            <Label htmlFor={path}>
               {formatFieldName(field.name)}
               {field.required && <span className="text-destructive ml-1">*</span>}
             </Label>
             <select
-              id={field.name}
+              id={path}
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-              value={formData[field.name] || field.default || ''}
-              onChange={(e) => handleInputChange(field.name, e.target.value)}
+              value={String(formData[path] ?? field.default ?? '')}
+              onChange={(e) => handleInputChange(path, e.target.value)}
             >
               <option value="">Select...</option>
               {options.map((opt) => (
@@ -594,9 +600,7 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
                 </option>
               ))}
             </select>
-            {flowState.errors?.[field.name] && (
-              <p className="text-sm text-destructive">{flowState.errors[field.name]}</p>
-            )}
+            {renderError(field.name)}
           </div>
         );
       }
@@ -609,24 +613,24 @@ export function AddPrinterDialog({ open, onOpenChange, onSuccess }: AddPrinterDi
         : getPlaceholder(field.name);
 
       return (
-        <div key={field.name} className="space-y-2">
-          <Label htmlFor={field.name}>
+        <div key={path} className="space-y-2">
+          <Label htmlFor={path}>
             {label}
             {field.required && <span className="text-destructive ml-1">*</span>}
           </Label>
           <Input
-            id={field.name}
+            id={path}
             type={field.name.includes('password') ? 'password' : 'text'}
-            value={formData[field.name] || ''}
-            onChange={(e) => handleInputChange(field.name, e.target.value)}
+            value={String(formData[path] ?? '')}
+            onChange={(e) => handleInputChange(path, e.target.value)}
             placeholder={placeholder}
           />
-          {flowState.errors?.[field.name] && (
-            <p className="text-sm text-destructive">{flowState.errors[field.name]}</p>
-          )}
+          {renderError(field.name)}
         </div>
       );
-    }).filter(Boolean); // Remove nulls from skipped fields
+    };
+
+    return flowState.data_schema.map((field) => renderField(field));
   };
 
   const renderMenuOptions = () => {
@@ -791,6 +795,7 @@ function formatFieldName(name: string): string {
     'email': 'Email',
     'password': 'Password',
     'access_code': 'Access Code',
+    'disable_ssl_verify': 'Disable SSL Verification',
   };
 
   if (specialCases[name]) {
@@ -812,6 +817,13 @@ function translateErrorCode(errorCode: string): string {
     'NewCode': 'Verification code is required',
     'required': 'This field is required',
     'value_error': 'Invalid value',
+    // ha-bambulab local (LAN) MQTT connection test failures
+    'cannot_connect_local_timeout': 'Timed out connecting to the printer. Check the host/IP address and that LAN mode is enabled on the printer.',
+    'cannot_connect_local_access_denied': 'The printer rejected the access code. Check the access code shown in the printer\'s network settings.',
+    'cannot_connect_local_incorrect_serial': 'The serial number does not match this printer.',
+    'cannot_connect_local_incorrect_address': 'Connection refused. Check the host/IP address and that LAN mode is enabled on the printer.',
+    'cannot_connect_local_address_unreachable': 'The printer address is unreachable from Home Assistant.',
+    'cannot_connect_local_unknown': 'Could not connect to the printer. Check the host, serial and access code. If the printer uses a certificate Home Assistant does not trust, try enabling "Disable SSL Verification" under Advanced.',
   };
 
   // Check for region validation error pattern
