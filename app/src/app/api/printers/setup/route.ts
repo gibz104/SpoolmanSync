@@ -192,14 +192,23 @@ export async function DELETE(request: NextRequest) {
         if (entry) {
           entryTitle = entry.title;
 
-          // Clean up SpoolmanSync automation records for this printer.
-          // printerId stores the discovered name (e.g. "X1C_00M09D462101575")
-          // while entry.title is the serial (e.g. "00M09D462101575"), so use contains.
-          const deleted = await prisma.automation.deleteMany({
-            where: { printerId: { contains: entry.title } },
-          });
-          if (deleted.count > 0) {
-            console.log(`Cleaned up ${deleted.count} automation record(s) for printer: ${entry.title}`);
+          // Clean up SpoolmanSync automation records for this printer, matching
+          // the automation id built from its stable prefix. Matching the entry
+          // title instead deleted other printers' records, because SQLite's
+          // LIKE is case-insensitive and a title like "A1" is a substring of
+          // serials such as X2D_20P8BJ5A1500474 (issue #86). A printer that
+          // can't be resolved keeps its record: a leftover row for a hidden
+          // printer is inert, and re-adding the printer reuses it.
+          const printer = (await client.discoverPrinters()).find(p => p.entry_id === entryId);
+          if (printer) {
+            const deleted = await prisma.automation.deleteMany({
+              where: { haAutomationId: `spoolmansync_update_spool_${printer.prefix}` },
+            });
+            if (deleted.count > 0) {
+              console.log(`Cleaned up ${deleted.count} automation record(s) for printer: ${printer.name}`);
+            }
+          } else {
+            console.log(`[Printers] No discovered printer for entry ${entryId}; leaving automation records alone`);
           }
         }
       }

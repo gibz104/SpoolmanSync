@@ -37,6 +37,8 @@ export interface HAPrinter {
   name: string;
   state: string;
   prefix: string;  // Stable prefix for YAML entity naming (derived from unique_id)
+  entry_id?: string;  // HA config entry this printer belongs to — the stable identity
+                      // used to match printers the user removed (see hidden-printers.ts)
   ams_units: HAAMS[];
   external_spools: HATray[];
   current_stage_entity?: string;
@@ -72,6 +74,12 @@ interface DeviceRegistryEntry {
   model: string | null;
   name: string | null;
   name_by_user: string | null;
+  // The config entry the device came from. HA sends all three: config_entry_id is
+  // the current field, primary_config_entry and config_entries are older ones kept
+  // for backwards compatibility (slated for removal in HA 2027.8 / 2027.10).
+  config_entry_id?: string | null;
+  primary_config_entry?: string | null;
+  config_entries?: string[];
 }
 
 export interface HATray {
@@ -85,6 +93,26 @@ export interface HATray {
   tray_uuid?: string;  // Spool serial number (unique per physical spool). Bambu only —
                        // Creality exposes no per-spool identifier (see src/lib/creality.ts).
   remaining_weight?: number;
+}
+
+/**
+ * The config entry a device belongs to — i.e. which printer the user added.
+ *
+ * Read from whichever field this HA core sends, newest first, so the id is
+ * available on both current and older cores. Printers are matched by this id
+ * rather than by their title or name, which users can rename and which
+ * collide across printers (issue #86).
+ */
+export function deviceConfigEntryId(device: {
+  config_entry_id?: string | null;
+  primary_config_entry?: string | null;
+  config_entries?: string[];
+} | undefined): string | undefined {
+  if (!device) return undefined;
+  return device.config_entry_id
+    || device.primary_config_entry
+    || device.config_entries?.[0]
+    || undefined;
 }
 
 /**
@@ -894,6 +922,7 @@ export class HomeAssistantClient {
         name,
         state: printerState?.state || 'unknown',
         prefix,
+        entry_id: deviceConfigEntryId(printerDevice),
         ams_units: amsUnits,
         external_spools: externalSpools,
         current_stage_entity: findPrinterEntity('stage')?.entity_id,
@@ -1078,6 +1107,7 @@ export class HomeAssistantClient {
         name,
         state: printerState?.state || 'unknown',
         prefix,
+        entry_id: deviceConfigEntryId(printerDevice),
         ams_units: amsUnits,
         external_spools: externalSpools,
         print_progress_entity: printProgressEntity?.entity_id,

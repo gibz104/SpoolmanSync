@@ -6,6 +6,7 @@ import { getHiddenPrinters } from '@/app/api/printers/setup/route';
 import { getVirtualPrinters, virtualPrintersToHAPrinters, migrateVirtualKeys, withVirtualLock } from '@/lib/virtual-printers';
 import { detectTrayMismatch } from '@/lib/tray-mismatch';
 import { reconcileSpoolLocations } from '@/lib/spool-location';
+import { filterHiddenPrinters } from '@/lib/hidden-printers';
 
 export async function GET() {
   try {
@@ -18,17 +19,9 @@ export async function GET() {
 
     const allPrinters = await haClient.discoverPrinters();
 
-    // Filter out printers removed from SpoolmanSync
+    // Filter out printers removed from SpoolmanSync, by config entry id (#86)
     const hiddenPrintersList = await getHiddenPrinters();
-    const hiddenTitles = new Set(hiddenPrintersList.map(h => h.title.toLowerCase()).filter(Boolean));
-
-    const printers = hiddenTitles.size > 0
-      ? allPrinters.filter(p => {
-          const name = p.name.toLowerCase();
-          const entityId = p.entity_id.toLowerCase();
-          return ![...hiddenTitles].some(t => name.includes(t) || entityId.includes(t));
-        })
-      : allPrinters;
+    const printers = filterHiddenPrinters(allPrinters, hiddenPrintersList);
 
     // Merge in user-defined virtual printers (dry boxes / dryers, issue #67).
     // They have no HA entity and no automation record, so they're enriched with
