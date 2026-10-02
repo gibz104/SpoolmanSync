@@ -26,6 +26,14 @@ describe('realTrayLocationLabel', () => {
     expect(realTrayLocationLabel('', 'AMS 1', 2, false)).toBe('Printer - AMS 1 Tray 2');
   });
 
+  it('handles an external tray with a slot name', () => {
+    expect(realTrayLocationLabel('X2D', undefined, 0, true, 'Left spool')).toBe('X2D - Left spool');
+  });
+
+  it('handles a missing external tray name', () => {
+    expect(realTrayLocationLabel('X2D', undefined, 0, true)).toBe('X2D - External');
+  });
+
   it('never exceeds Spoolman max length', () => {
     const longName = 'P'.repeat(200);
     const label = realTrayLocationLabel(longName, 'AMS 1', 3, false);
