@@ -125,7 +125,9 @@ export default function SpoolAssignPage({
           for (let i = 0; i < extSpools.length; i++) {
             trayOptions.push({
               id: extSpools[i].unique_id || extSpools[i].entity_id,
-              label: extSpools.length > 1 ? `External Spool ${i + 1}` : 'External Spool',
+              label:
+                extSpools[i].slot_name?.trim() ||
+                (extSpools.length > 1 ? `External Spool ${i + 1}` : 'External Spool'),
               printer: printer.name,
             });
           }
