@@ -94,9 +94,7 @@ export function realTrayLocationLabel(
   externalSlotName?: string,
 ): string {
   const name = (printerName || 'Printer').trim();
-  return truncateLocation(
-    `${name} - ${realTraySuffix(amsName, trayNumber, isExternal, externalSlotName)}`
-  );  
+  return truncateLocation(`${name} - ${realTraySuffix(amsName, trayNumber, isExternal, externalSlotName)}`);
 }
 
 /**
@@ -196,13 +194,7 @@ export async function makeLocationResolver(): Promise<LocationResolver | null> {
             }
           }
           for (const ext of p.external_spools) {
-            const label = realTrayLocationLabel(
-              p.name,
-              undefined,
-              ext.tray_number,
-              true,
-              ext.slot_name,
-            );
+            const label = realTrayLocationLabel(p.name, undefined, ext.tray_number, true, ext.slot_name);
             if (ext.unique_id) map.set(ext.unique_id, label);
             if (ext.entity_id) map.set(ext.entity_id, label);
           }
@@ -369,19 +361,8 @@ export async function reconcileSpoolLocations(
     }
     for (const ext of p.external_spools) {
       const e = {
-        label: realTrayLocationLabel(
-          p.name,
-          undefined,
-          ext.tray_number,
-          true,
-          ext.slot_name,
-        ),
-        suffix: realTraySuffix(
-          undefined,
-          ext.tray_number,
-          true,
-          ext.slot_name,
-        ),        
+        label: realTrayLocationLabel(p.name, undefined, ext.tray_number, true, ext.slot_name),
+        suffix: realTraySuffix(undefined, ext.tray_number, true, ext.slot_name),
         prefix: p.prefix,
       };
       if (ext.unique_id) index.set(ext.unique_id, e);
