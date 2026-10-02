@@ -74,8 +74,9 @@ export function realTraySuffix(
   amsName: string | undefined,
   trayNumber: number,
   isExternal: boolean,
+  externalSlotName?: string,
 ): string {
-  if (isExternal) return 'External';
+  if (isExternal) return externalSlotName?.trim() || 'External';
   if (amsName && amsName.trim()) return `${amsName.trim()} Tray ${trayNumber}`;
   return `Tray ${trayNumber}`;
 }
@@ -90,9 +91,12 @@ export function realTrayLocationLabel(
   amsName: string | undefined,
   trayNumber: number,
   isExternal: boolean,
+  externalSlotName?: string,
 ): string {
   const name = (printerName || 'Printer').trim();
-  return truncateLocation(`${name} - ${realTraySuffix(amsName, trayNumber, isExternal)}`);
+  return truncateLocation(
+    `${name} - ${realTraySuffix(amsName, trayNumber, isExternal, externalSlotName)}`
+  );  
 }
 
 /**
@@ -192,7 +196,13 @@ export async function makeLocationResolver(): Promise<LocationResolver | null> {
             }
           }
           for (const ext of p.external_spools) {
-            const label = realTrayLocationLabel(p.name, undefined, ext.tray_number, true);
+            const label = realTrayLocationLabel(
+              p.name,
+              undefined,
+              ext.tray_number,
+              true,
+              ext.slot_name,
+            );
             if (ext.unique_id) map.set(ext.unique_id, label);
             if (ext.entity_id) map.set(ext.entity_id, label);
           }
@@ -217,7 +227,12 @@ export interface ReconcilablePrinter {
   prefix: string;
   is_virtual?: boolean;
   ams_units: { name?: string; trays: { unique_id?: string; entity_id?: string; tray_number: number }[] }[];
-  external_spools: { unique_id?: string; entity_id?: string; tray_number: number }[];
+  external_spools: {
+    unique_id?: string;
+    entity_id?: string;
+    tray_number: number;
+    slot_name?: string;
+  }[];
 }
 export interface ReconcilableSpool {
   id: number;
@@ -354,8 +369,19 @@ export async function reconcileSpoolLocations(
     }
     for (const ext of p.external_spools) {
       const e = {
-        label: realTrayLocationLabel(p.name, undefined, ext.tray_number, true),
-        suffix: realTraySuffix(undefined, ext.tray_number, true),
+        label: realTrayLocationLabel(
+          p.name,
+          undefined,
+          ext.tray_number,
+          true,
+          ext.slot_name,
+        ),
+        suffix: realTraySuffix(
+          undefined,
+          ext.tray_number,
+          true,
+          ext.slot_name,
+        ),        
         prefix: p.prefix,
       };
       if (ext.unique_id) index.set(ext.unique_id, e);
