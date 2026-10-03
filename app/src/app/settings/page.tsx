@@ -101,6 +101,7 @@ function SettingsContent() {
   const [neverAutoClearTray, setNeverAutoClearTray] = useState(false);
   const [ignoreColorMismatch, setIgnoreColorMismatch] = useState(false);
   const [syncSpoolmanLocation, setSyncSpoolmanLocation] = useState(false);
+  const [locationGranularity, setLocationGranularity] = useState<'tray' | 'ams'>('tray');
   // Optional "holding pen" for unassigned spools. Empty = clear the location
   // (the original behavior). Only has any effect while location sync is on.
   const [unassignedSpoolLocation, setUnassignedSpoolLocation] = useState('');
@@ -226,6 +227,9 @@ function SettingsContent() {
       }
       if (data.syncSpoolmanLocation !== undefined) {
         setSyncSpoolmanLocation(data.syncSpoolmanLocation);
+      }
+      if (data.locationGranularity === 'tray' || data.locationGranularity === 'ams') {
+        setLocationGranularity(data.locationGranularity);
       }
       // Seed once. fetchSettings() also runs on a 3s poll in embedded mode while
       // HA finishes onboarding, and this is a controlled input saved on blur —
@@ -550,6 +554,27 @@ function SettingsContent() {
    * tabbing through the field doesn't spam the API or the user with toasts.
    * Reverts the input on failure rather than leaving it showing an unsaved value.
    */
+  const saveLocationGranularity = async (granularity: 'tray' | 'ams') => {
+    const previous = locationGranularity;
+    setLocationGranularity(granularity); // optimistic, reverted below on failure
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'location_granularity', granularity }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success(
+        granularity === 'ams'
+          ? 'Spools will be filed by AMS unit'
+          : 'Spools will be filed by individual tray'
+      );
+    } catch {
+      setLocationGranularity(previous);
+      toast.error('Failed to save location detail');
+    }
+  };
+
   const saveUnassignedLocation = async () => {
     const location = unassignedSpoolLocation.trim();
     if (location === savedUnassignedLocation) {
@@ -1385,10 +1410,36 @@ function SettingsContent() {
                         Sync spool locations to Spoolman
                       </Label>
                       <p className="text-xs text-muted-foreground">
-                        When enabled, assigning a spool to a tray writes Spoolman&apos;s native location field — real printers as &quot;Printer - AMS 1 Tray 3&quot; and virtual printers as their name — so Spoolman reporting shows where every spool is (in a printer or in storage). Only spools you assign/unassign are affected; a location you set by hand is left alone. Applies to future assignments (existing ones update as spools are re-assigned).
+                        When enabled, assigning a spool to a tray writes Spoolman&apos;s native location field — real printers as &quot;Printer - AMS 1 Tray 3&quot; by default and virtual printers as their name — so Spoolman reporting shows where every spool is (in a printer or in storage). Only spools you assign/unassign are affected; a location you set by hand is left alone. Applies to future assignments (existing ones update as spools are re-assigned).
                       </p>
                     </div>
                   </div>
+
+                  {/* Label detail — like the holding pen below, this only means
+                      anything while location sync is on, since nothing writes a
+                      location otherwise. */}
+                  {syncSpoolmanLocation && (
+                    <div className="ml-7 space-y-2">
+                      <Label htmlFor="location-granularity" className="text-sm font-medium">
+                        Location detail
+                      </Label>
+                      <select
+                        id="location-granularity"
+                        value={locationGranularity}
+                        onChange={(e) => saveLocationGranularity(e.target.value === 'ams' ? 'ams' : 'tray')}
+                        className="flex h-10 w-full max-w-sm rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                      >
+                        <option value="tray">Individual tray (Printer - AMS 1 Tray 3)</option>
+                        <option value="ams">AMS unit (Printer - AMS 1)</option>
+                      </select>
+                      <p className="text-xs text-muted-foreground">
+                        Choose how precise the location is. With AMS unit, every spool in the same
+                        AMS shares one location instead of getting its own tray. External spools and
+                        printers without an AMS are unaffected either way. Changing this updates the
+                        spools SpoolmanSync has already filed, the next time the dashboard loads.
+                      </p>
+                    </div>
+                  )}
 
                   {/* Holding pen — only meaningful while location sync is on, so
                       it's nested under the toggle and hidden when it's off. */}

@@ -38,6 +38,27 @@ export const LOCATION_SYNC_KEY = 'sync_spoolman_location';
  * at all otherwise, so this setting is inert on its own.
  */
 export const UNASSIGNED_LOCATION_KEY = 'unassigned_spool_location';
+
+/**
+ * How precise a real-tray label is (issue #85). 'tray' is the original
+ * "X1C - AMS 1 Tray 3". 'ams' stops at the unit, "X1C - AMS 1", so every spool
+ * in an AMS shares one location, which is how some users prefer to file them.
+ * External slots and trays with no AMS unit are unaffected by either value.
+ */
+export type LocationGranularity = 'tray' | 'ams';
+export const LOCATION_GRANULARITY_KEY = 'location_granularity';
+
+/**
+ * Granularities SpoolmanSync has written labels under, so switching back and
+ * forth can recognize its own older labels and migrate them.
+ *
+ * An install with nothing recorded has only ever written tray-level labels,
+ * which is why that is the default. Keeping this list rather than assuming
+ * every shape is ours matters for safety: a user who has never chosen AMS
+ * labels can hand-write "X1C - AMS 1" on a spool and reconcile will leave it
+ * alone, because that shape was never one of ours.
+ */
+export const LOCATION_GRANULARITY_SEEN_KEY = 'location_granularity_seen';
 /** Spoolman's `location` field is `str | None` with max_length 64. */
 export { SPOOLMAN_LOCATION_MAX } from '@/lib/api/spoolman';
 
@@ -61,25 +82,77 @@ export async function getUnassignedLocation(): Promise<string> {
   return value ? truncateLocation(value) : '';
 }
 
+/** Read a stored granularity, falling back to the original tray-level labels. */
+export function parseLocationGranularity(value: string | undefined | null): LocationGranularity {
+  return value === 'ams' ? 'ams' : 'tray';
+}
+
+/**
+ * The configured label granularity. Only consulted on paths that write or
+ * reconcile locations, all of which already require location sync to be on, so
+ * this is inert while sync is off.
+ */
+export async function getLocationGranularity(): Promise<LocationGranularity> {
+  const s = await prisma.settings.findUnique({ where: { key: LOCATION_GRANULARITY_KEY } });
+  return parseLocationGranularity(s?.value);
+}
+
+/** Granularities we may have written labels under, newest selection included. */
+export async function getSeenGranularities(): Promise<LocationGranularity[]> {
+  const s = await prisma.settings.findUnique({ where: { key: LOCATION_GRANULARITY_SEEN_KEY } });
+  const seen: LocationGranularity[] = ['tray']; // pre-dates the setting
+  if (s?.value) {
+    try {
+      const parsed: unknown = JSON.parse(s.value);
+      if (Array.isArray(parsed)) {
+        for (const value of parsed) {
+          if (value === 'ams' && !seen.includes('ams')) seen.push('ams');
+        }
+      }
+    } catch { /* hand-edited or corrupt — the default already covers us */ }
+  }
+  return seen;
+}
+
+/**
+ * Record that labels may now exist under this granularity. Called when the user
+ * picks one, and again from reconcile as a self-heal, so a value changed some
+ * other way (an older build, a direct database edit) still migrates later.
+ */
+export async function rememberGranularity(granularity: LocationGranularity): Promise<void> {
+  const seen = await getSeenGranularities();
+  if (seen.includes(granularity)) return;
+  const value = JSON.stringify([...seen, granularity]);
+  await prisma.settings.upsert({
+    where: { key: LOCATION_GRANULARITY_SEEN_KEY },
+    update: { value },
+    create: { key: LOCATION_GRANULARITY_SEEN_KEY, value },
+  });
+}
+
 /** Clamp any location string to Spoolman's 64-char limit. */
 export function truncateLocation(value: string): string {
   return value.length > SPOOLMAN_LOCATION_MAX ? value.slice(0, SPOOLMAN_LOCATION_MAX) : value;
 }
 
 /**
- * The tray half of a real-tray label — "AMS 1 Tray 3", "Tray 2", "External".
- * Depends only on the tray itself, never on the printer name, which is what
- * lets reconcileSpoolLocations() recognize a pre-rename label as ours.
+ * The tray half of a real-tray label — "AMS 1 Tray 3", "AMS 1", "Tray 2",
+ * "External". Depends only on the tray itself, never on the printer name, which
+ * is what lets reconcileSpoolLocations() recognize a pre-rename label as ours.
  */
 export function realTraySuffix(
   amsName: string | undefined,
   trayNumber: number,
   isExternal: boolean,
   externalSlotName?: string,
+  granularity: LocationGranularity = 'tray',
 ): string {
   if (isExternal) return externalSlotName?.trim() || 'External';
-  if (amsName && amsName.trim()) return `${amsName.trim()} Tray ${trayNumber}`;
-  return `Tray ${trayNumber}`;
+  const ams = amsName?.trim();
+  // Without an AMS unit there is nothing to group under, so a tray keeps its own
+  // label whatever the setting says.
+  if (!ams) return `Tray ${trayNumber}`;
+  return granularity === 'ams' ? ams : `${ams} Tray ${trayNumber}`;
 }
 
 /**
@@ -92,12 +165,29 @@ export function realTraySuffix(
  * widening the match to a location the user typed.
  */
 export function legacyTraySuffixes(
+  amsName: string | undefined,
+  trayNumber: number,
   isExternal: boolean,
   externalSlotName?: string,
+  granularity: LocationGranularity = 'tray',
+  seenGranularities: LocationGranularity[] = [],
 ): string[] {
-  if (!isExternal) return [];
-  const slotName = externalSlotName?.trim();
-  return slotName && slotName !== 'External' ? ['External'] : [];
+  const current = realTraySuffix(amsName, trayNumber, isExternal, externalSlotName, granularity);
+  const out: string[] = [];
+  const add = (suffix: string) => {
+    if (suffix && suffix !== current && !out.includes(suffix)) out.push(suffix);
+  };
+
+  // An external slot was always "External" before dual-nozzle slots were numbered.
+  if (isExternal) add('External');
+
+  // Labels written while a different granularity was selected.
+  for (const seen of seenGranularities) {
+    if (seen === granularity) continue;
+    add(realTraySuffix(amsName, trayNumber, isExternal, externalSlotName, seen));
+  }
+
+  return out;
 }
 
 /**
@@ -111,9 +201,11 @@ export function realTrayLocationLabel(
   trayNumber: number,
   isExternal: boolean,
   externalSlotName?: string,
+  granularity: LocationGranularity = 'tray',
 ): string {
   const name = (printerName || 'Printer').trim();
-  return truncateLocation(`${name} - ${realTraySuffix(amsName, trayNumber, isExternal, externalSlotName)}`);
+  const suffix = realTraySuffix(amsName, trayNumber, isExternal, externalSlotName, granularity);
+  return truncateLocation(`${name} - ${suffix}`);
 }
 
 /**
@@ -188,6 +280,8 @@ export async function makeLocationSync(): Promise<{
 } | null> {
   if (!(await isLocationSyncEnabled())) return null;
 
+  const granularity = await getLocationGranularity();
+  const seenGranularities = await getSeenGranularities();
   let cache: Map<string, TrayLabels> | null = null;
 
   const build = async (): Promise<Map<string, TrayLabels>> => {
@@ -216,11 +310,21 @@ export async function makeLocationSync(): Promise<{
         const printers = await ha.discoverPrinters();
         for (const p of printers) {
           if (p.is_virtual) continue; // handled above
+          const printerName = (p.name || 'Printer').trim();
+          const aliasesFor = (
+            amsName: string | undefined,
+            trayNumber: number,
+            isExternal: boolean,
+            slotName?: string,
+          ) =>
+            legacyTraySuffixes(amsName, trayNumber, isExternal, slotName, granularity, seenGranularities)
+              .map(suffix => truncateLocation(`${printerName} - ${suffix}`));
+
           for (const ams of p.ams_units) {
             for (const t of ams.trays) {
               const entry: TrayLabels = {
-                label: realTrayLocationLabel(p.name, ams.name, t.tray_number, false),
-                aliases: [],
+                label: realTrayLocationLabel(p.name, ams.name, t.tray_number, false, undefined, granularity),
+                aliases: aliasesFor(ams.name, t.tray_number, false),
               };
               if (t.unique_id) map.set(t.unique_id, entry);
               if (t.entity_id) map.set(t.entity_id, entry);
@@ -228,10 +332,8 @@ export async function makeLocationSync(): Promise<{
           }
           for (const ext of p.external_spools) {
             const entry: TrayLabels = {
-              label: realTrayLocationLabel(p.name, undefined, ext.tray_number, true, ext.slot_name),
-              aliases: legacyTraySuffixes(true, ext.slot_name).map(suffix =>
-                truncateLocation(`${(p.name || 'Printer').trim()} - ${suffix}`),
-              ),
+              label: realTrayLocationLabel(p.name, undefined, ext.tray_number, true, ext.slot_name, granularity),
+              aliases: aliasesFor(undefined, ext.tray_number, true, ext.slot_name),
             };
             if (ext.unique_id) map.set(ext.unique_id, entry);
             if (ext.entity_id) map.set(ext.entity_id, entry);
@@ -366,6 +468,19 @@ export async function reconcileSpoolLocations(
 ): Promise<number> {
   if (!(await isLocationSyncEnabled())) return 0;
 
+  const granularity = await getLocationGranularity();
+  const seenGranularities = await getSeenGranularities();
+  // Self-heal: if the setting was changed some other way, record it now so the
+  // labels written under it are still recognized after a later switch.
+  if (!seenGranularities.includes(granularity)) {
+    try {
+      await rememberGranularity(granularity);
+      seenGranularities.push(granularity);
+    } catch (err) {
+      console.warn('[location-sync] Could not record the label granularity:', err);
+    }
+  }
+
   const names: StoredNames = { ...(await loadStoredNames()) };
   let namesChanged = false;
   const bootstrapPrefixes = new Set<string>();
@@ -405,9 +520,11 @@ export async function reconcileSpoolLocations(
     for (const ams of p.ams_units) {
       for (const t of ams.trays) {
         const e = {
-          label: realTrayLocationLabel(p.name, ams.name, t.tray_number, false),
-          suffix: realTraySuffix(ams.name, t.tray_number, false),
-          legacySuffixes: legacyTraySuffixes(false),
+          label: realTrayLocationLabel(p.name, ams.name, t.tray_number, false, undefined, granularity),
+          suffix: realTraySuffix(ams.name, t.tray_number, false, undefined, granularity),
+          legacySuffixes: legacyTraySuffixes(
+            ams.name, t.tray_number, false, undefined, granularity, seenGranularities,
+          ),
           name: currentName,
           prefix: p.prefix,
         };
@@ -418,9 +535,11 @@ export async function reconcileSpoolLocations(
     }
     for (const ext of p.external_spools) {
       const e = {
-        label: realTrayLocationLabel(p.name, undefined, ext.tray_number, true, ext.slot_name),
-        suffix: realTraySuffix(undefined, ext.tray_number, true, ext.slot_name),
-        legacySuffixes: legacyTraySuffixes(true, ext.slot_name),
+        label: realTrayLocationLabel(p.name, undefined, ext.tray_number, true, ext.slot_name, granularity),
+        suffix: realTraySuffix(undefined, ext.tray_number, true, ext.slot_name, granularity),
+        legacySuffixes: legacyTraySuffixes(
+          undefined, ext.tray_number, true, ext.slot_name, granularity, seenGranularities,
+        ),
         name: currentName,
         prefix: p.prefix,
       };

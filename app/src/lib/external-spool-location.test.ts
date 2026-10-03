@@ -103,10 +103,10 @@ describe('labels for a named external slot', () => {
   });
 
   it('only treats "External" as a legacy shape once a slot is named', () => {
-    expect(legacyTraySuffixes(true, 'External 2')).toEqual(['External']);
-    expect(legacyTraySuffixes(true)).toEqual([]);
-    expect(legacyTraySuffixes(true, 'External')).toEqual([]);
-    expect(legacyTraySuffixes(false)).toEqual([]);
+    expect(legacyTraySuffixes(undefined, 0, true, 'External 2')).toEqual(['External']);
+    expect(legacyTraySuffixes(undefined, 0, true)).toEqual([]);
+    expect(legacyTraySuffixes(undefined, 0, true, 'External')).toEqual([]);
+    expect(legacyTraySuffixes('AMS 1', 3, false)).toEqual([]);
   });
 });
 

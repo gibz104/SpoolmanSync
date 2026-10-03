@@ -11,7 +11,13 @@ import {
 } from '@/lib/api/homeassistant';
 import { createActivityLog } from '@/lib/activity-log';
 import { isWebhookAuthEnabled } from '@/lib/webhook-secret';
-import { UNASSIGNED_LOCATION_KEY, SPOOLMAN_LOCATION_MAX } from '@/lib/spool-location';
+import {
+  UNASSIGNED_LOCATION_KEY,
+  SPOOLMAN_LOCATION_MAX,
+  LOCATION_GRANULARITY_KEY,
+  parseLocationGranularity,
+  rememberGranularity,
+} from '@/lib/spool-location';
 
 export async function GET() {
   try {
@@ -54,6 +60,7 @@ export async function GET() {
       const ignoreColorSetting = await prisma.settings.findUnique({ where: { key: 'ignore_color_mismatch' } });
       const syncLocationSetting = await prisma.settings.findUnique({ where: { key: 'sync_spoolman_location' } });
       const unassignedLocationSetting = await prisma.settings.findUnique({ where: { key: UNASSIGNED_LOCATION_KEY } });
+      const locationGranularitySetting = await prisma.settings.findUnique({ where: { key: LOCATION_GRANULARITY_KEY } });
       const webhookAuthEnabled = await isWebhookAuthEnabled();
 
       return NextResponse.json({
@@ -74,6 +81,7 @@ export async function GET() {
         ignoreColorMismatch: ignoreColorSetting?.value === 'true',
         syncSpoolmanLocation: syncLocationSetting?.value === 'true',
         unassignedSpoolLocation: unassignedLocationSetting?.value ?? '',
+        locationGranularity: parseLocationGranularity(locationGranularitySetting?.value),
         webhookConfigured: webhookAuthEnabled,
       });
     }
@@ -262,6 +270,7 @@ export async function GET() {
     const ignoreColorSetting = await prisma.settings.findUnique({ where: { key: 'ignore_color_mismatch' } });
     const syncLocationSetting = await prisma.settings.findUnique({ where: { key: 'sync_spoolman_location' } });
     const unassignedLocationSetting = await prisma.settings.findUnique({ where: { key: UNASSIGNED_LOCATION_KEY } });
+    const locationGranularitySetting = await prisma.settings.findUnique({ where: { key: LOCATION_GRANULARITY_KEY } });
     const webhookAuthEnabled = await isWebhookAuthEnabled();
 
     return NextResponse.json({
@@ -278,6 +287,7 @@ export async function GET() {
       ignoreColorMismatch: ignoreColorSetting?.value === 'true',
       syncSpoolmanLocation: syncLocationSetting?.value === 'true',
       unassignedSpoolLocation: unassignedLocationSetting?.value ?? '',
+      locationGranularity: parseLocationGranularity(locationGranularitySetting?.value),
       webhookConfigured: webhookAuthEnabled,
     });
   } catch (error) {
@@ -395,6 +405,30 @@ export async function POST(request: NextRequest) {
         update: { value: location },
       });
       return NextResponse.json({ success: true, location });
+    }
+
+    if (type === 'location_granularity') {
+      // How precise the written location label is: 'tray' ("X1C - AMS 1 Tray 3")
+      // or 'ams' ("X1C - AMS 1"), so spools in one AMS share a location (#85).
+      // Only consulted while sync_spoolman_location is on, so it is inert on its
+      // own. Labels written under the old value are migrated by
+      // reconcileSpoolLocations() on the next dashboard load.
+      if (body.granularity !== 'tray' && body.granularity !== 'ams') {
+        return NextResponse.json(
+          { error: "granularity must be 'tray' or 'ams'" },
+          { status: 400 }
+        );
+      }
+      const granularity = body.granularity;
+      await prisma.settings.upsert({
+        where: { key: LOCATION_GRANULARITY_KEY },
+        create: { key: LOCATION_GRANULARITY_KEY, value: granularity },
+        update: { value: granularity },
+      });
+      // Remember that labels may now exist in this shape, so switching back can
+      // recognize and migrate them instead of stranding them.
+      await rememberGranularity(granularity);
+      return NextResponse.json({ success: true, granularity });
     }
 
     if (type === 'never_auto_clear_tray') {
