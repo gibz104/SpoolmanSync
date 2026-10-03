@@ -87,6 +87,7 @@ export interface HATray {
   unique_id?: string;     // Stable ID from entity registry (survives entity renames)
   tray_number: number;
   is_external?: boolean;  // True for external spool slots
+  slot_name?: string;     // Human-readable slot/device name, mainly for external spools
   name?: string;  // Filament name from RFID (e.g., "Matte Dark Blue")
   color?: string;
   material?: string;
@@ -886,11 +887,18 @@ export class HomeAssistantClient {
           if (!bestExt) continue;
 
           const extState = stateMap.get(bestExt.entity_id);
+          const externalIndex = getExternalSpoolIndex(bestExt.unique_id);
+          const slotName =
+            childDevice.name_by_user?.trim() ||
+            childDevice.name?.trim() ||
+            (externalIndex > 1 ? `External ${externalIndex}` : 'External');
+
           externalSpools.push({
             entity_id: bestExt.entity_id,
             unique_id: bestExt.unique_id,
             tray_number: 0,
             is_external: true,
+            slot_name: slotName,
             name: extState?.attributes.name as string,
             color: extState?.attributes.color as string,
             material: extState?.attributes.type as string,
@@ -952,6 +960,7 @@ export class HomeAssistantClient {
           unique_id: syntheticId,
           tray_number: 0,
           is_external: true,
+          slot_name: 'External',
         });
       }
     }
