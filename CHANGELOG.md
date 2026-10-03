@@ -5,6 +5,15 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-10-02
+
+### Added
+- New "Location detail" setting, under the Spoolman location sync toggle in Settings (#85). Spools can now be filed by AMS unit ("X1C - AMS 1") instead of by individual tray ("X1C - AMS 1 Tray 3"), so everything loaded in one AMS shares a location. The per-tray labels stay the default, so nothing changes unless you pick the new option. Switching either way moves the locations SpoolmanSync has already written, the next time the dashboard loads. External spools and printers without an AMS keep their own labels either way, and a location you set by hand is never touched.
+
+### Fixed
+- Removing a printer from SpoolmanSync no longer hides unrelated printers (#86). The dashboard matched the removed printer's config entry title anywhere in another printer's name or entity id, so removing one titled "A1" also hid an X2D and an A2L whose serials contain those letters. Printers are now matched on their config entry id, which is exact. The same change makes removing a Creality printer work, since its default entry title ("Creality Printer (WS)") matched nothing at all and left the printer on the dashboard, and it stops the cleanup that runs on removal from deleting another printer's automation record.
+- The two external spool slots on dual-nozzle printers (H2D, H2C, X2D) can be told apart (#87, contributed by @misch2). Both showed as "External" and shared a single Spoolman location, so there was no way to tell which spool was in which. They are now "External 1" and "External 2", or whatever you renamed the slots to in Home Assistant. Printers with a single external spool are unchanged, and locations already written for a dual-slot printer move to the numbered label on the next dashboard load.
+
 ## [1.6.13] - 2026-09-20
 
 ### Fixed
