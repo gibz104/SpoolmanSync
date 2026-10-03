@@ -70,6 +70,7 @@ describe('applyLocationSync', () => {
     settings({ syncEnabled: false, unassigned: 'Holding Pen' });
     const client = {
       setLocationResolver: vi.fn(),
+      setLocationMatcher: vi.fn(),
       setUnassignedLocation: vi.fn(),
     };
 
@@ -77,13 +78,15 @@ describe('applyLocationSync', () => {
 
     expect(active).toBe(false);
     expect(client.setLocationResolver).not.toHaveBeenCalled();
+    expect(client.setLocationMatcher).not.toHaveBeenCalled();
     expect(client.setUnassignedLocation).not.toHaveBeenCalled();
   });
 
-  it('wires the resolver AND the holding pen together when enabled', async () => {
+  it('wires the resolver, the matcher AND the holding pen together when enabled', async () => {
     settings({ syncEnabled: true, unassigned: 'Holding Pen' });
     const client = {
       setLocationResolver: vi.fn(),
+      setLocationMatcher: vi.fn(),
       setUnassignedLocation: vi.fn(),
     };
 
@@ -91,6 +94,9 @@ describe('applyLocationSync', () => {
 
     expect(active).toBe(true);
     expect(client.setLocationResolver).toHaveBeenCalledTimes(1);
+    // The matcher decides what an unassign may clear. Without it, a location
+    // written under an older label scheme is never cleared.
+    expect(client.setLocationMatcher).toHaveBeenCalledTimes(1);
     expect(client.setUnassignedLocation).toHaveBeenCalledWith('Holding Pen');
   });
 
@@ -98,6 +104,7 @@ describe('applyLocationSync', () => {
     settings({ syncEnabled: true });
     const client = {
       setLocationResolver: vi.fn(),
+      setLocationMatcher: vi.fn(),
       setUnassignedLocation: vi.fn(),
     };
 

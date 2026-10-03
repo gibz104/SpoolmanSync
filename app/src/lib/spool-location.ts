@@ -22,6 +22,7 @@ import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { getVirtualPrinters, virtualSlotKey } from '@/lib/virtual-printers';
 import {
   SPOOLMAN_LOCATION_MAX,
+  type LocationMatcher,
   type LocationResolver,
   type Spool,
   type SpoolmanClient,
@@ -79,6 +80,24 @@ export function realTraySuffix(
   if (isExternal) return externalSlotName?.trim() || 'External';
   if (amsName && amsName.trim()) return `${amsName.trim()} Tray ${trayNumber}`;
   return `Tray ${trayNumber}`;
+}
+
+/**
+ * Tray suffixes SpoolmanSync used to write for this tray but no longer does.
+ *
+ * An external slot was always "External". Dual-nozzle printers now number their
+ * two slots, so a spool sitting in one still carries the old label until it is
+ * migrated. Returning the old shape here is what lets reconcileSpoolLocations()
+ * recognize it as ours (and the unassign clear still match it), without ever
+ * widening the match to a location the user typed.
+ */
+export function legacyTraySuffixes(
+  isExternal: boolean,
+  externalSlotName?: string,
+): string[] {
+  if (!isExternal) return [];
+  const slotName = externalSlotName?.trim();
+  return slotName && slotName !== 'External' ? ['External'] : [];
 }
 
 /**
@@ -146,22 +165,33 @@ export function virtualLocationLabel(printerName: string): string {
   return truncateLocation((printerName || '').trim());
 }
 
+/** A tray's current location label, plus labels we wrote for it in the past. */
+interface TrayLabels {
+  label: string;
+  /** Labels SpoolmanSync itself wrote before, still ours to clear or migrate. */
+  aliases: string[];
+}
+
 /**
- * Build a resolver mapping a tray key (unique_id, entity_id, or virtual slot key)
- * to its location label. Returns null when location sync is disabled, which tells
- * SpoolmanClient to leave the `location` field untouched entirely.
+ * Build the resolver (what to write on assign) and the matcher (what an unassign
+ * may clear) for every tray key — unique_id, entity_id, or virtual slot key.
+ * Returns null when location sync is disabled, which tells SpoolmanClient to
+ * leave the `location` field untouched entirely.
  *
  * Discovery (virtual printers + HA printers) runs lazily on first lookup and is
- * cached for the lifetime of the resolver, so a single webhook/request only pays
- * the cost once regardless of how many spools it touches.
+ * shared by both, so a single webhook/request only pays the cost once regardless
+ * of how many spools it touches.
  */
-export async function makeLocationResolver(): Promise<LocationResolver | null> {
+export async function makeLocationSync(): Promise<{
+  resolver: LocationResolver;
+  matcher: LocationMatcher;
+} | null> {
   if (!(await isLocationSyncEnabled())) return null;
 
-  let cache: Map<string, string> | null = null;
+  let cache: Map<string, TrayLabels> | null = null;
 
-  const build = async (): Promise<Map<string, string>> => {
-    const map = new Map<string, string>();
+  const build = async (): Promise<Map<string, TrayLabels>> => {
+    const map = new Map<string, TrayLabels>();
 
     // Virtual printers (dry boxes / shelves) — keyed by the friendly slot key.
     try {
@@ -170,7 +200,7 @@ export async function makeLocationResolver(): Promise<LocationResolver | null> {
         const label = virtualLocationLabel(vp.name);
         if (!label) continue;
         for (const slot of vp.slots) {
-          map.set(virtualSlotKey(vp.name, slot.number), label);
+          map.set(virtualSlotKey(vp.name, slot.number), { label, aliases: [] });
         }
       }
     } catch (err) {
@@ -188,15 +218,23 @@ export async function makeLocationResolver(): Promise<LocationResolver | null> {
           if (p.is_virtual) continue; // handled above
           for (const ams of p.ams_units) {
             for (const t of ams.trays) {
-              const label = realTrayLocationLabel(p.name, ams.name, t.tray_number, false);
-              if (t.unique_id) map.set(t.unique_id, label);
-              if (t.entity_id) map.set(t.entity_id, label);
+              const entry: TrayLabels = {
+                label: realTrayLocationLabel(p.name, ams.name, t.tray_number, false),
+                aliases: [],
+              };
+              if (t.unique_id) map.set(t.unique_id, entry);
+              if (t.entity_id) map.set(t.entity_id, entry);
             }
           }
           for (const ext of p.external_spools) {
-            const label = realTrayLocationLabel(p.name, undefined, ext.tray_number, true, ext.slot_name);
-            if (ext.unique_id) map.set(ext.unique_id, label);
-            if (ext.entity_id) map.set(ext.entity_id, label);
+            const entry: TrayLabels = {
+              label: realTrayLocationLabel(p.name, undefined, ext.tray_number, true, ext.slot_name),
+              aliases: legacyTraySuffixes(true, ext.slot_name).map(suffix =>
+                truncateLocation(`${(p.name || 'Printer').trim()} - ${suffix}`),
+              ),
+            };
+            if (ext.unique_id) map.set(ext.unique_id, entry);
+            if (ext.entity_id) map.set(ext.entity_id, entry);
           }
         }
       }
@@ -207,9 +245,19 @@ export async function makeLocationResolver(): Promise<LocationResolver | null> {
     return map;
   };
 
-  return async (trayKey: string): Promise<string> => {
+  const lookup = async (trayKey: string): Promise<TrayLabels | undefined> => {
     if (!cache) cache = await build();
-    return cache.get(trayKey) ?? '';
+    return cache.get(trayKey);
+  };
+
+  return {
+    resolver: async (trayKey: string) => (await lookup(trayKey))?.label ?? '',
+    matcher: async (trayKey: string, location: string) => {
+      const entry = await lookup(trayKey);
+      if (!entry) return false;
+      const current = location.trim();
+      return current === entry.label || entry.aliases.includes(current);
+    },
   };
 }
 
@@ -322,8 +370,15 @@ export async function reconcileSpoolLocations(
   let namesChanged = false;
   const bootstrapPrefixes = new Set<string>();
 
-  // trayKey (unique_id AND entity_id) → current label, tray suffix, prefix.
-  const index = new Map<string, { label: string; suffix: string; prefix: string }>();
+  // trayKey (unique_id AND entity_id) → current label, tray suffix, printer name
+  // and prefix, plus any suffix we wrote for this tray under an older scheme.
+  const index = new Map<string, {
+    label: string;
+    suffix: string;
+    legacySuffixes: string[];
+    name: string;
+    prefix: string;
+  }>();
   // Prefixes whose trays were actually visible this run. Only their formers may
   // be consumed below — a printer absent from this run (hidden, or transiently
   // missing from discovery) must keep its pending retries untouched.
@@ -352,6 +407,8 @@ export async function reconcileSpoolLocations(
         const e = {
           label: realTrayLocationLabel(p.name, ams.name, t.tray_number, false),
           suffix: realTraySuffix(ams.name, t.tray_number, false),
+          legacySuffixes: legacyTraySuffixes(false),
+          name: currentName,
           prefix: p.prefix,
         };
         if (t.unique_id) index.set(t.unique_id, e);
@@ -363,6 +420,8 @@ export async function reconcileSpoolLocations(
       const e = {
         label: realTrayLocationLabel(p.name, undefined, ext.tray_number, true, ext.slot_name),
         suffix: realTraySuffix(undefined, ext.tray_number, true, ext.slot_name),
+        legacySuffixes: legacyTraySuffixes(true, ext.slot_name),
+        name: currentName,
         prefix: p.prefix,
       };
       if (ext.unique_id) index.set(ext.unique_id, e);
@@ -393,19 +452,33 @@ export async function reconcileSpoolLocations(
       const current = (spool.location ?? '').trim();
       if (!current || current === info.label) continue;
 
+      // Shapes this location could have if SpoolmanSync wrote it: the suffix for
+      // this tray today, or one written under an older scheme, under the printer's
+      // current name or any name it has been renamed away from. Anything else is
+      // the user's own text and is left alone.
+      const suffixes = [info.suffix, ...info.legacySuffixes];
       const formers = names[info.prefix]?.formers ?? [];
-      const matchedFormer = formers.find(
-        f => current === truncateLocation(`${f} - ${info.suffix}`),
-      );
-      const isBootstrapMatch =
-        bootstrapPrefixes.has(info.prefix) && current.endsWith(` - ${info.suffix}`);
-      if (matchedFormer === undefined && !isBootstrapMatch) continue;
+      let matchedName: string | undefined;
+      for (const suffix of suffixes) {
+        matchedName = [info.name, ...formers].find(
+          n => current === truncateLocation(`${n} - ${suffix}`),
+        );
+        if (matchedName !== undefined) break;
+      }
 
-      // The name to remember for retry if this spool can't migrate now. For a
-      // bootstrap match (nothing remembered yet) it is derived from the label
-      // itself, so a failed first-run migration is not stranded forever.
-      const retryName =
-        matchedFormer ?? current.slice(0, current.length - ` - ${info.suffix}`.length);
+      // On the very first run for a printer nothing is remembered yet, so fall
+      // back once to shape matching and take the name from the label itself.
+      if (matchedName === undefined && bootstrapPrefixes.has(info.prefix)) {
+        const suffix = suffixes.find(sx => current.endsWith(` - ${sx}`));
+        if (suffix !== undefined) {
+          matchedName = current.slice(0, current.length - ` - ${suffix}`.length);
+        }
+      }
+      if (matchedName === undefined) continue;
+
+      // The name to remember for retry if this spool can't migrate now, so a
+      // failed migration is not stranded forever.
+      const retryName = matchedName;
 
       try {
         // Guard against a concurrent assign/unassign between our snapshot and
@@ -469,10 +542,11 @@ export async function reconcileSpoolLocations(
  * Returns whether sync is active, for callers that want to know.
  */
 export async function applyLocationSync(client: SpoolmanClient): Promise<boolean> {
-  const resolver = await makeLocationResolver();
-  if (!resolver) return false;
+  const sync = await makeLocationSync();
+  if (!sync) return false;
 
-  client.setLocationResolver(resolver);
+  client.setLocationResolver(sync.resolver);
+  client.setLocationMatcher(sync.matcher);
   client.setUnassignedLocation(await getUnassignedLocation());
   return true;
 }

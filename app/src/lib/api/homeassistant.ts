@@ -87,7 +87,10 @@ export interface HATray {
   unique_id?: string;     // Stable ID from entity registry (survives entity renames)
   tray_number: number;
   is_external?: boolean;  // True for external spool slots
-  slot_name?: string;     // Human-readable slot/device name, mainly for external spools
+  slot_name?: string;     // Label for an external spool slot that needs one: the name the
+                          // user gave the device in HA, else "External 1"/"External 2" on a
+                          // printer with two slots. Left unset when the plain "External" the
+                          // UI already shows is right, so single-slot printers are unchanged.
   name?: string;  // Filament name from RFID (e.g., "Matte Dark Blue")
   color?: string;
   material?: string;
@@ -887,18 +890,17 @@ export class HomeAssistantClient {
           if (!bestExt) continue;
 
           const extState = stateMap.get(bestExt.entity_id);
-          const externalIndex = getExternalSpoolIndex(bestExt.unique_id);
-          const slotName =
-            childDevice.name_by_user?.trim() ||
-            childDevice.name?.trim() ||
-            (externalIndex > 1 ? `External ${externalIndex}` : 'External');
 
           externalSpools.push({
             entity_id: bestExt.entity_id,
             unique_id: bestExt.unique_id,
             tray_number: 0,
             is_external: true,
-            slot_name: slotName,
+            // Only a deliberate rename in HA. ha-bambulab always names the device
+            // itself ("X2D_<serial>_ExternalSpool"), so taking device.name would
+            // put that serial in the dashboard and in Spoolman locations for every
+            // user who never renamed anything.
+            slot_name: childDevice.name_by_user?.trim() || undefined,
             name: extState?.attributes.name as string,
             color: extState?.attributes.color as string,
             material: extState?.attributes.type as string,
@@ -915,6 +917,18 @@ export class HomeAssistantClient {
         const bEntity = bambuEntities.find(e => e.entity_id === b.entity_id);
         return getExternalSpoolIndex(aEntity?.unique_id || '') - getExternalSpoolIndex(bEntity?.unique_id || '');
       });
+
+      // Dual-nozzle printers (H2D, X2D, ...) expose two external spool slots, and
+      // calling both "External" left them indistinguishable in the UI and sharing
+      // one Spoolman location. Number them by the index in their unique_id, which
+      // is also what the sort above orders them by. A slot the user renamed in HA
+      // keeps that name. Printers with a single slot stay unlabeled.
+      if (externalSpools.length > 1) {
+        for (const ext of externalSpools) {
+          if (ext.slot_name) continue;
+          ext.slot_name = `External ${getExternalSpoolIndex(ext.unique_id || '')}`;
+        }
+      }
 
       // Find printer-level entities by translation_key
       const printerDeviceEntities = deviceEntityMap.get(bestPrinterEntity.device_id!) || [];
@@ -960,7 +974,6 @@ export class HomeAssistantClient {
           unique_id: syntheticId,
           tray_number: 0,
           is_external: true,
-          slot_name: 'External',
         });
       }
     }

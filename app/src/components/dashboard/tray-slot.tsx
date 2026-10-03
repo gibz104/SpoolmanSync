@@ -290,7 +290,7 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            Assign Spool to {tray.is_external ? externalLabel : `Tray ${tray.tray_number}`}
+            Assign Spool to {tray.is_external ? (tray.slot_name?.trim() || 'External Slot') : `Tray ${tray.tray_number}`}
           </DialogTitle>
           <DialogDescription>
             Search and select a spool from your Spoolman inventory.

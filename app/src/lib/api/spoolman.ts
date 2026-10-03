@@ -152,9 +152,18 @@ export type EntityIdResolver = (entityId: string) => Promise<string>;
  * Resolver that maps a tray key (unique_id, entity_id, or virtual slot key) to a
  * human-readable Spoolman `location` label. Returns '' when the tray can't be
  * resolved (in which case the location field is left untouched). Provided by
- * callers only when location sync is enabled — see makeLocationResolver().
+ * callers only when location sync is enabled — see makeLocationSync().
  */
 export type LocationResolver = (trayKey: string) => Promise<string>;
+
+/**
+ * Tells whether a `location` currently on a spool is one SpoolmanSync wrote for
+ * that tray — the label it would write now, or one it wrote under an older
+ * scheme (an external slot that has since been numbered). Used only to decide
+ * whether an unassign may clear the field, so a hand-set location still survives.
+ * Without one, the clear falls back to matching today's label exactly.
+ */
+export type LocationMatcher = (trayKey: string, location: string) => Promise<boolean>;
 
 /**
  * Spoolman's `location` field is `str | None` with max_length 64. Lives here
@@ -168,6 +177,7 @@ export class SpoolmanClient {
   private baseUrl: string;
   private entityIdResolver: EntityIdResolver | null = null;
   private locationResolver: LocationResolver | null = null;
+  private locationMatcher: LocationMatcher | null = null;
   private unassignedLocation = '';
 
   constructor(baseUrl: string) {
@@ -195,6 +205,15 @@ export class SpoolmanClient {
    */
   setLocationResolver(resolver: LocationResolver): void {
     this.locationResolver = resolver;
+  }
+
+  /**
+   * Set the matcher used by the guarded clear on unassign. Optional: without it
+   * the clear only recognizes today's label, which leaves a location written
+   * under an older scheme behind on the spool forever.
+   */
+  setLocationMatcher(matcher: LocationMatcher): void {
+    this.locationMatcher = matcher;
   }
 
   /**
@@ -407,8 +426,10 @@ export class SpoolmanClient {
         } catch { /* not JSON — leave blank, we won't clear */ }
       }
       if (oldTray) {
-        const label = await this.locationResolver(oldTray);
-        if (label && label === spool.location) {
+        const wasOurs = this.locationMatcher
+          ? await this.locationMatcher(oldTray, spool.location)
+          : (await this.locationResolver(oldTray)) === spool.location;
+        if (wasOurs) {
           // With a holding pen configured, park the spool there so it stays
           // visible in Spoolman's location views instead of vanishing from them.
           // Otherwise null, which truly unsets Spoolman's `str | None` field.

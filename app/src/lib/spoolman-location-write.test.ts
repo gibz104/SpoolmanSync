@@ -215,6 +215,43 @@ describe('unassignSpoolFromTray — holding pen', () => {
     expect(patchBody(calls)!.location).toBe('P'.repeat(64));
   });
 
+  it('clears a label written before the slot was renamed (external slots)', async () => {
+    // A dual-nozzle printer's slots are now numbered, so a spool parked there
+    // still carries "X2D - External" until the next reconcile. The matcher
+    // recognizes it as ours, so unassigning still clears it instead of leaving
+    // a stale location on the spool forever.
+    const onExternal = {
+      id: 1,
+      extra: { active_tray: JSON.stringify('x2d_ext_2') },
+      location: 'X2D - External',
+    };
+    const calls = installFetch(onExternal);
+    const client = new SpoolmanClient('http://spoolman');
+    client.setLocationResolver(async () => 'X2D - External 2');
+    client.setLocationMatcher(async (key, location) =>
+      key === 'x2d_ext_2' && ['X2D - External 2', 'X2D - External'].includes(location));
+
+    await client.unassignSpoolFromTray(1);
+
+    expect(patchBody(calls)!.location).toBeNull();
+  });
+
+  it('still refuses to clear a hand-set location when a matcher is present', async () => {
+    const calls = installFetch({
+      id: 1,
+      extra: { active_tray: JSON.stringify('x2d_ext_2') },
+      location: 'My special shelf',
+    });
+    const client = new SpoolmanClient('http://spoolman');
+    client.setLocationResolver(async () => 'X2D - External 2');
+    client.setLocationMatcher(async (key, location) =>
+      key === 'x2d_ext_2' && ['X2D - External 2', 'X2D - External'].includes(location));
+
+    await client.unassignSpoolFromTray(1);
+
+    expect('location' in patchBody(calls)!).toBe(false);
+  });
+
   it('does not affect assignment — a spool moved to a tray gets the tray label', async () => {
     const calls = installFetch({ id: 1, extra: {} });
     const client = new SpoolmanClient('http://spoolman');
