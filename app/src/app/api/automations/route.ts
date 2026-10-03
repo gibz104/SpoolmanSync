@@ -10,6 +10,7 @@ import {
 } from '@/lib/ha-config-generator';
 import { createActivityLog } from '@/lib/activity-log';
 import { getHiddenPrinters } from '@/app/api/printers/setup/route';
+import { filterHiddenPrinters } from '@/lib/hidden-printers';
 import { getOrCreateWebhookSecret, enableWebhookAuth } from '@/lib/webhook-secret';
 import * as fs from 'fs/promises';
 
@@ -74,18 +75,12 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === 'discover') {
-      // Discover printers and trays, filtering out any removed from SpoolmanSync
+      // Discover printers and trays, filtering out any removed from SpoolmanSync.
+      // By config entry id (#86) — matching the entry title as a substring also
+      // dropped printers whose serial merely contained it, which here means
+      // generating automations that silently leave those printers untracked.
       const allDiscovered = await haClient.discoverPrinters();
-      const hiddenForDiscover = await getHiddenPrinters();
-      const hiddenTitlesForDiscover = new Set(hiddenForDiscover.map(h => h.title.toLowerCase()).filter(Boolean));
-
-      const printers = hiddenTitlesForDiscover.size > 0
-        ? allDiscovered.filter(p => {
-            const name = p.name.toLowerCase();
-            const entityId = p.entity_id.toLowerCase();
-            return ![...hiddenTitlesForDiscover].some(t => name.includes(t) || entityId.includes(t));
-          })
-        : allDiscovered;
+      const printers = filterHiddenPrinters(allDiscovered, await getHiddenPrinters());
 
       if (printers.length === 0) {
         return NextResponse.json({
@@ -185,19 +180,10 @@ export async function POST(request: NextRequest) {
         }, { status: 400 });
       }
 
-      // Discover printers, filtering out any hidden from SpoolmanSync
+      // Same entry-id filter as the discover action above (#86): a printer that
+      // was never removed must keep its automations.
       const allPrinters = await haClient.discoverPrinters();
-      const hiddenPrinters = await getHiddenPrinters();
-      const hiddenTitles = new Set(hiddenPrinters.map(h => h.title.toLowerCase()).filter(Boolean));
-
-      const printers = hiddenTitles.size > 0
-        ? allPrinters.filter(p => {
-            // Match by checking if the printer name or entity_id contains a hidden title
-            const name = p.name.toLowerCase();
-            const entityId = p.entity_id.toLowerCase();
-            return ![...hiddenTitles].some(t => name.includes(t) || entityId.includes(t));
-          })
-        : allPrinters;
+      const printers = filterHiddenPrinters(allPrinters, await getHiddenPrinters());
 
       if (printers.length === 0) {
         return NextResponse.json({
