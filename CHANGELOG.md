@@ -5,7 +5,7 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.7.0] - 2026-10-02
+## [1.6.14] - 2026-10-02
 
 ### Added
 - New "Location detail" setting, under the Spoolman location sync toggle in Settings (#85). Spools can now be filed by AMS unit ("X1C - AMS 1") instead of by individual tray ("X1C - AMS 1 Tray 3"), so everything loaded in one AMS shares a location. The per-tray labels stay the default, so nothing changes unless you pick the new option. Switching either way moves the locations SpoolmanSync has already written, the next time the dashboard loads. External spools and printers without an AMS keep their own labels either way, and a location you set by hand is never touched.
