@@ -39,6 +39,7 @@ export interface HAPrinter {
   prefix: string;  // Stable prefix for YAML entity naming (derived from unique_id)
   entry_id?: string;  // HA config entry this printer belongs to — the stable identity
                       // used to match printers the user removed (see hidden-printers.ts)
+  device_id?: string;  // HA device of the printer itself, for services that target one
   ams_units: HAAMS[];
   external_spools: HATray[];
   current_stage_entity?: string;
@@ -46,6 +47,7 @@ export interface HAPrinter {
   print_progress_entity?: string;
   job_name_entity?: string;    // Bambu subtask_name: the job the printer is running
   gcode_file_entity?: string;  // Bambu gcode_file
+  skipped_objects_entity?: string;  // Bambu: how many objects the user skipped mid-print
   used_material_entity?: string;  // Creality's used_material_length sensor (cm)
   is_virtual?: boolean;  // True for user-defined virtual printers (dry boxes/dryers)
 }
@@ -968,6 +970,7 @@ export class HomeAssistantClient {
         state: printerState?.state || 'unknown',
         prefix,
         entry_id: deviceConfigEntryId(printerDevice),
+        device_id: bestPrinterEntity.device_id ?? undefined,
         ams_units: amsUnits,
         external_spools: externalSpools,
         current_stage_entity: findPrinterEntity('stage')?.entity_id,
@@ -975,6 +978,7 @@ export class HomeAssistantClient {
         print_progress_entity: findPrinterEntity('print_progress')?.entity_id,
         job_name_entity: findPrinterEntity('subtask_name')?.entity_id,
         gcode_file_entity: findPrinterEntity('gcode_file')?.entity_id,
+        skipped_objects_entity: findPrinterEntity('skipped_objects')?.entity_id,
       };
 
       printers.push(printer);
@@ -1156,6 +1160,7 @@ export class HomeAssistantClient {
         state: printerState?.state || 'unknown',
         prefix,
         entry_id: deviceConfigEntryId(printerDevice),
+        device_id: printerEntity.device_id,
         ams_units: amsUnits,
         external_spools: externalSpools,
         print_progress_entity: printProgressEntity?.entity_id,

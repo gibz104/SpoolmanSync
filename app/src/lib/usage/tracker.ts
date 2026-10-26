@@ -19,7 +19,7 @@ import { processGlobal } from '@/lib/process-global';
 import { isValidTrayUuid } from '@/lib/webhook-helpers';
 import { EntitySubscription, type EntityMap } from './entities';
 import { watchFor, watchedEntities, type PrinterWatch } from './printers';
-import { ABANDON_AFTER_MS, advance, type Ended, type PreviousPrint, type SessionState } from './session';
+import { ABANDON_AFTER_MS, advance, type Ended, type Outcome, type PreviousPrint, type SessionState } from './session';
 import { markInterruptedWrites, settle, type SettleResult } from './ledger';
 import { removeLegacyEntities } from './legacy-cleanup';
 
@@ -27,6 +27,12 @@ const HEARTBEAT_MS = 60_000;
 const REDISCOVER_MS = 10 * 60_000;
 const SAVE_EVERY_MS = 30_000;
 const SPOOL_CACHE_MS = 5_000;
+/**
+ * ha_creality_ws re-reads which CFS slot is feeding only every five minutes
+ * unless asked, so a multi-colour print would be charged to whichever slot fed
+ * at the last read. Asked this often while a print runs.
+ */
+const CFS_REFRESH_MS = 15_000;
 /** How long an ended print keeps trying to reach Spoolman before it is given up on. */
 const GIVE_UP_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -36,8 +42,8 @@ export interface TrackerDeps {
   spoolman: () => Promise<SpoolmanClient | null>;
   /** Remove what earlier versions' YAML usage tracking left in Home Assistant; returns what was removed. */
   cleanup?: () => Promise<string[]>;
-  /** Ask ha_creality_ws to re-read which CFS slot is feeding. */
-  refreshCfs?: () => Promise<void>;
+  /** Ask ha_creality_ws to re-read which CFS slot is feeding on these printers' devices (all, if none are known). */
+  refreshCfs?: (deviceIds: string[]) => Promise<void>;
   source: (onChange: (touched: string[]) => void, onStatus: (connected: boolean, detail?: string) => void) => {
     states: EntityMap;
     readonly connected: boolean;
@@ -100,6 +106,7 @@ export class UsageTracker {
     await this.rediscover();
     this.source.start();
     this.timers.push(setInterval(() => this.heartbeat(), HEARTBEAT_MS));
+    this.timers.push(setInterval(() => this.pollCfs(), CFS_REFRESH_MS));
     this.timers.push(setInterval(() => void this.rediscover(), REDISCOVER_MS));
     for (const t of this.timers) t.unref?.();
   }
@@ -163,18 +170,20 @@ export class UsageTracker {
 
   heartbeat(): Promise<void> {
     for (const prefix of this.watches.keys()) this.dirty.add(prefix);
-    if ([...this.open.keys()].some(prefix => this.watches.get(prefix)?.brand === 'creality')) this.refreshCfs();
     return this.flush(true);
   }
 
-  /**
-   * ha_creality_ws re-reads which CFS slot is feeding only every five minutes,
-   * so without asking, a print's first minutes (and any slot change) would be
-   * charged to whichever slot fed last. Asked as a print starts and each minute
-   * while one runs.
-   */
-  private refreshCfs(): void {
-    this.deps.refreshCfs?.().catch(err => console.warn('[usage] Could not refresh the CFS slots:', err instanceof Error ? err.message : err));
+  /** Re-read the feeding CFS slot of every Creality printer printing now. */
+  pollCfs(): void {
+    const printing = [...this.open.keys()].map(prefix => this.watches.get(prefix)).filter(w => w?.brand === 'creality');
+    if (printing.length > 0) this.refreshCfs(printing as PrinterWatch[]);
+  }
+
+  private refreshCfs(watches: PrinterWatch[]): void {
+    if (this.stopped) return;
+    const ids = watches.map(w => w.deviceId).filter((id): id is string => !!id);
+    this.deps.refreshCfs?.(ids.length === watches.length ? ids : [])
+      .catch(err => console.warn('[usage] Could not refresh the CFS slots:', err instanceof Error ? err.message : err));
   }
 
   /** Every pass queued so far, one at a time. */
@@ -206,7 +215,7 @@ export class UsageTracker {
       await this.end(watch, cur.id, step.ended);
     }
     if (!step.session) return;
-    if (step.started && watch.brand === 'creality') this.refreshCfs();
+    if (step.started && watch.brand === 'creality') this.refreshCfs([watch]);
 
     let open = step.started ? null : this.open.get(prefix);
     if (!open) {
@@ -252,7 +261,7 @@ export class UsageTracker {
       },
     });
     if (ended.attention) await this.addAttention(id, [ended.attention]);
-    this.previous.set(watch.prefix, { job: state.job, plateGrams: state.plate?.grams ?? null, counter: state.counter });
+    this.previous.set(watch.prefix, previousPrint(state, ended.outcome, this.deps.now()));
     await this.finish(watch, id, ended.used, this.deps.now());
   }
 
@@ -380,8 +389,7 @@ export class UsageTracker {
   private async previousFor(prefix: string): Promise<PreviousPrint | null> {
     if (!this.previous.has(prefix)) {
       const row = await prisma.printSession.findFirst({ where: { printer: prefix, endedAt: { not: null } }, orderBy: { endedAt: 'desc' } });
-      const state: SessionState | null = row ? JSON.parse(row.state) : null;
-      this.previous.set(prefix, state ? { job: state.job, plateGrams: state.plate?.grams ?? null, counter: state.counter } : null);
+      this.previous.set(prefix, row ? previousPrint(JSON.parse(row.state), row.outcome as Outcome | null, row.endedAt!.getTime()) : null);
     }
     return this.previous.get(prefix) ?? null;
   }
@@ -402,6 +410,10 @@ export class UsageTracker {
       });
     }
   }
+}
+
+function previousPrint(state: SessionState, outcome: Outcome | null, endedAt: number): PreviousPrint {
+  return { job: state.job, outcome, endedAt, progress: state.progress, plateGrams: state.plate?.grams ?? null, counter: state.counter };
 }
 
 async function spoolmanClient(): Promise<SpoolmanClient | null> {
@@ -433,8 +445,8 @@ export async function startUsageTracker(): Promise<void> {
       const ha = await HomeAssistantClient.fromConnection();
       return ha ? removeLegacyEntities(ha) : [];
     },
-    refreshCfs: async () => {
-      await (await HomeAssistantClient.fromConnection())?.callService('ha_creality_ws', 'request_cfs_info', {});
+    refreshCfs: async deviceIds => {
+      await (await HomeAssistantClient.fromConnection())?.callService('ha_creality_ws', 'request_cfs_info', deviceIds.length > 0 ? { device_id: deviceIds } : {});
     },
     source: (onChange, onStatus) => new EntitySubscription({
       connect: async () => {

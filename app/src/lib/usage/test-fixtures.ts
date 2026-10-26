@@ -104,9 +104,10 @@ export class FakeSpoolman {
     return Math.round(this.spools.find(s => s.id === id)!.used_weight * 1000) / 1000;
   }
 
-  async getSpools(): Promise<Spool[]> {
+  /** Like Spoolman's API, archived spools only when asked for. */
+  async getSpools(includeArchived = false): Promise<Spool[]> {
     if (this.failWith) throw this.failWith;
-    return structuredClone(this.spools);
+    return structuredClone(this.spools.filter(s => includeArchived || !s.archived));
   }
 
   async useWeight(spoolId: number, grams: number): Promise<Spool> {
@@ -143,11 +144,94 @@ export const X1 = {
   name: 'sensor.x1c_subtask_name',
   file: 'sensor.x1c_gcode_file',
   stage: 'sensor.x1c_current_stage',
+  skipped: 'sensor.x1c_skipped_objects',
   tray: (n: number) => `sensor.x1c_ams_1_tray_${n}`,
   ext: 'sensor.x1c_external_spool',
   key: (n: number) => `X1C_SERIAL_AMS_1_tray_${n}`,
   extKey: 'X1C_SERIAL_ExternalSpool_external_spool',
 };
+
+export const H2D = {
+  status: 'sensor.h2d_print_status',
+  progress: 'sensor.h2d_print_progress',
+  weight: 'sensor.h2d_print_weight',
+  name: 'sensor.h2d_subtask_name',
+  file: 'sensor.h2d_gcode_file',
+  skipped: 'sensor.h2d_skipped_objects',
+  tray: (ams: number, n: number) => `sensor.h2d_ams_${ams}_tray_${n}`,
+  key: (ams: number, n: number) => `H2D_SERIAL_AMS_${ams}_tray_${n}`,
+  ht: 'sensor.h2d_ams_128_tray_1',
+  htKey: 'H2D_SERIAL_AMS_128_tray_1',
+  ext: (n: 1 | 2) => `sensor.h2d_externalspool${n === 2 ? '2' : ''}_external_spool`,
+  extKey: (n: 1 | 2) => `H2D_SERIAL_ExternalSpool${n === 2 ? '2' : ''}_external_spool`,
+};
+
+/** A dual-nozzle H2D: an AMS on each nozzle, an AMS HT and two external spools. */
+export function h2dPrinter(): HAPrinter {
+  const ams = (n: number) => ({
+    entity_id: `sensor.h2d_ams_${n}_humidity`, name: `AMS ${n}`, ams_number: n,
+    trays: [1, 2, 3, 4].map(t => ({ entity_id: H2D.tray(n, t), unique_id: H2D.key(n, t), tray_number: t })),
+  });
+  return {
+    brand: 'bambu_lab', entity_id: H2D.status, name: 'H2D', state: 'idle', prefix: 'h2d_serial', device_id: 'h2d-device',
+    ams_units: [ams(1), ams(2), {
+      entity_id: 'sensor.h2d_ams_128_humidity', name: 'AMS HT', ams_number: 128,
+      trays: [{ entity_id: H2D.ht, unique_id: H2D.htKey, tray_number: 1 }],
+    }],
+    external_spools: ([1, 2] as const).map(n => ({ entity_id: H2D.ext(n), unique_id: H2D.extKey(n), tray_number: 0, is_external: true })),
+    print_weight_entity: H2D.weight, print_progress_entity: H2D.progress,
+    job_name_entity: H2D.name, gcode_file_entity: H2D.file, skipped_objects_entity: H2D.skipped,
+  };
+}
+
+/** Every H2D slot's entity, in the order a feed schedule names them. */
+export const H2D_SLOTS = [H2D.tray(1, 1), H2D.tray(1, 2), H2D.tray(2, 1), H2D.tray(2, 2), H2D.ht, H2D.ext(1), H2D.ext(2)];
+
+export function h2dIdle(ha: FakeHA): void {
+  ha.set(H2D.status, 'finish');
+  ha.set(H2D.progress, 100);
+  ha.set(H2D.weight, 0, {});
+  ha.set(H2D.name, 'unknown');
+  ha.set(H2D.file, 'unknown');
+  ha.set(H2D.skipped, 0, { objects: [] });
+  for (const id of H2D_SLOTS) ha.set(id, 'PLA Basic', { active: false, name: 'PLA Basic', type: 'PLA' });
+}
+
+/**
+ * One H2D print. `feed` names the slot feeding from each progress on; as in
+ * ha-bambulab, print_weight's attributes are the AMS split unless an external
+ * spool is active, when they are the whole plate under that spool's name.
+ */
+export async function h2dPrint(ha: FakeHA, flush: () => Promise<void>, o: {
+  name: string; plate: number; feed: Array<[number, string]>; split: Record<string, number>;
+  endAt?: number; outcome?: 'finish' | 'failed'; during?: (pct: number) => void | Promise<void>;
+}): Promise<void> {
+  const step = async (ms: number) => { ha.tick(ms); await flush(); };
+  const attrs = (active: string) =>
+    active === H2D.ext(1) ? { 'External Spool': o.plate } : active === H2D.ext(2) ? { 'External Spool 2': o.plate } : o.split;
+  const feed = (slot: string) => {
+    for (const id of H2D_SLOTS) ha.attr(id, { active: id === slot });
+    ha.set(H2D.weight, o.plate, attrs(slot));
+  };
+  ha.set(H2D.status, 'prepare');
+  ha.set(H2D.name, o.name);
+  ha.set(H2D.file, `${o.name}.gcode.3mf`);
+  await step(1_000);
+  feed(o.feed[0][1]);
+  await step(30_000);
+  ha.set(H2D.progress, 0);
+  ha.set(H2D.status, 'running');
+  await step(5_000);
+  for (let pct = 1; pct <= (o.endAt ?? 100); pct++) {
+    const slot = o.feed.filter(([at]) => at < pct).at(-1)![1];
+    feed(slot);
+    ha.set(H2D.progress, pct);
+    await step(30_000);
+    await o.during?.(pct);
+  }
+  ha.set(H2D.status, o.outcome ?? 'finish');
+  await step(1_000);
+}
 
 export function bambuPrinter(): HAPrinter {
   return {
@@ -158,7 +242,7 @@ export function bambuPrinter(): HAPrinter {
     }],
     external_spools: [{ entity_id: X1.ext, unique_id: X1.extKey, tray_number: 0, is_external: true }],
     current_stage_entity: X1.stage, print_weight_entity: X1.weight, print_progress_entity: X1.progress,
-    job_name_entity: X1.name, gcode_file_entity: X1.file,
+    job_name_entity: X1.name, gcode_file_entity: X1.file, skipped_objects_entity: X1.skipped,
   };
 }
 
@@ -169,6 +253,7 @@ export function bambuIdle(ha: FakeHA, last: { progress?: number; plate?: number;
   ha.set(X1.weight, last.plate ?? 0, last.trays ?? {});
   ha.set(X1.name, last.name ?? 'unknown');
   ha.set(X1.file, last.name ? `${last.name}.gcode.3mf` : 'unknown');
+  ha.set(X1.skipped, 0, { objects: [] });
   for (const n of [1, 2, 3, 4]) ha.set(X1.tray(n), 'PLA Basic', { active: false, tray_uuid: '0000000000000000', name: 'PLA Basic', type: 'PLA' });
   ha.set(X1.ext, 'Empty', { active: false, tray_uuid: '', name: 'Empty' });
 }
@@ -250,7 +335,7 @@ export const K2 = {
 
 export function crealityPrinter(): HAPrinter {
   return {
-    brand: 'creality', entity_id: K2.status, name: 'K2 Plus', state: 'idle', prefix: 'k2',
+    brand: 'creality', entity_id: K2.status, name: 'K2 Plus', state: 'idle', prefix: 'k2', device_id: 'k2-device',
     ams_units: [{
       entity_id: 'sensor.k2_cfs_box_1_humidity', name: 'CFS Box 1', ams_number: 1,
       trays: [1, 2, 3, 4].map(n => ({ entity_id: K2.slot(n), unique_id: K2.key(n), tray_number: n })),

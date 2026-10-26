@@ -39,10 +39,15 @@ export function classifyFailure(err: unknown): Exclude<WriteResult, 'done'> {
   return 'uncertain';
 }
 
-/** The spool assigned to a tray: by unique_id, or by entity_id for spools assigned before trays were keyed by unique_id. */
-export function assignedSpool(spools: Spool[], trayKey: string, entityId?: string | null): Spool | undefined {
-  return spools.find(s => s.extra?.active_tray === JSON.stringify(trayKey))
-    ?? (entityId ? spools.find(s => s.extra?.active_tray === JSON.stringify(entityId)) : undefined);
+/**
+ * The spools assigned to a tray: by unique_id, or by entity_id for spools
+ * assigned before trays were keyed by unique_id. More than one is a mistake
+ * (assigning a spool unassigns the tray's others), but an edit made in Spoolman
+ * itself can cause it.
+ */
+export function assignedSpools(spools: Spool[], trayKey: string, entityId?: string | null): Spool[] {
+  const byKey = spools.filter(s => s.extra?.active_tray === JSON.stringify(trayKey));
+  return byKey.length > 0 || !entityId ? byKey : spools.filter(s => s.extra?.active_tray === JSON.stringify(entityId));
 }
 
 export interface SettleInput {
@@ -131,10 +136,13 @@ export async function settle(input: SettleInput, deps: SettleDeps): Promise<Sett
     }
 
     if (delta > 0) {
-      const spool = assignedSpool(spools, trayKey, input.entityId?.(trayKey));
+      const [spool, ...others] = assignedSpools(spools, trayKey, input.entityId?.(trayKey));
       if (!spool) {
         if (input.final) result.notes.push(`${input.label(trayKey)} has no spool assigned, so its usage from this print was not deducted.`);
         continue;
+      }
+      if (others.length > 0) {
+        result.notes.push(`${input.label(trayKey)} has several spools assigned (${[spool, ...others].map(o => `#${o.id}`).join(', ')}); its usage was deducted from #${spool.id}.`);
       }
       const grams = delta * gramsPer(spool);
       if (grams < 0.005 || (!input.final && grams < MIN_WRITE_GRAMS)) continue;
