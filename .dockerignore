@@ -1,0 +1,20 @@
+# For the add-on image, which is built with the repo root as context. Docker
+# only reads <context>/.dockerignore, so the list that used to sit next to the
+# add-on's Dockerfile never applied. The app image uses app/.dockerignore.
+app/node_modules
+app/.next
+app/src/generated
+app/tsconfig.tsbuildinfo
+app/.env
+app/.env.*
+**/*.db
+**/*.db-journal
+
+homeassistant/
+# Hidden files and folders: version control, CI, editor and tool settings.
+.*
+*.md
+app/*.md
+spoolmansync-ha-addon/*.md
+spoolmansync-ha-addon/icon.png
+spoolmansync-ha-addon/logo.png

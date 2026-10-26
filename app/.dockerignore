@@ -1,0 +1,15 @@
+# The image installs and builds its own; copying the host's over them made the
+# build depend on the host OS (a macOS build shipped darwin binaries).
+node_modules
+.next
+src/generated
+tsconfig.tsbuildinfo
+
+# A developer's environment and databases.
+.env
+.env.*
+*.db
+*.db-journal
+
+# Notes; the image uses none of them.
+*.md
