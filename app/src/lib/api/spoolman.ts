@@ -257,6 +257,8 @@ export class SpoolmanClient {
 
   private async fetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const response = await fetch(`${this.baseUrl}/api/v1${endpoint}`, {
+      // No request may hang for ever: the usage tracker waits on these.
+      signal: AbortSignal.timeout(30_000),
       ...options,
       headers: {
         'Content-Type': 'application/json',
@@ -536,11 +538,10 @@ export class SpoolmanClient {
   /**
    * Update spool weight (use filament). A negative weight gives filament back.
    */
-  async useWeight(spoolId: number, weight: number, timeoutMs = 30_000): Promise<Spool> {
+  async useWeight(spoolId: number, weight: number): Promise<Spool> {
     return this.fetch(`/spool/${spoolId}/use`, {
       method: 'PUT',
       body: JSON.stringify({ use_weight: weight }),
-      signal: AbortSignal.timeout(timeoutMs),
     });
   }
 
