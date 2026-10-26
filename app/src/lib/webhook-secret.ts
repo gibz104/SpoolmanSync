@@ -46,17 +46,25 @@ export async function enableWebhookAuth(): Promise<void> {
   });
 }
 
-/** Return the existing webhook secret, generating and persisting one if absent. */
+/**
+ * Return the existing webhook secret, generating and persisting one if absent.
+ *
+ * Two callers arriving together (previewing and applying automations) must get
+ * the same secret, so a stored one is never replaced and the value returned is
+ * the one the database holds; otherwise one caller's automations would carry a
+ * secret the webhook then rejects.
+ */
 export async function getOrCreateWebhookSecret(): Promise<string> {
   const existing = await getWebhookSecret();
   if (existing) return existing;
 
   const secret = randomBytes(32).toString('hex');
-  await prisma.settings.upsert({
-    where: { key: WEBHOOK_SECRET_KEY },
-    create: { key: WEBHOOK_SECRET_KEY, value: secret },
-    update: { value: secret },
+  await prisma.settings.create({ data: { key: WEBHOOK_SECRET_KEY, value: secret } }).catch(() => {
+    // Created meanwhile by a concurrent caller; theirs is read back below.
   });
+  const stored = await getWebhookSecret();
+  if (stored) return stored;
+  await prisma.settings.update({ where: { key: WEBHOOK_SECRET_KEY }, data: { value: secret } });
   return secret;
 }
 
