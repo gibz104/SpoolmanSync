@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { HomeAssistantClient, isEmbeddedMode, isAddonMode } from '@/lib/api/homeassistant';
 import {
-  generateHAConfig, mergeConfiguration, mergeAutomations,
+  generateHAConfig, mergeAutomations,
   detectPackagesConfig, addPackagesDirective, addPackageEntry,
   repairDuplicatePackagesDirective,
   stripSpoolmanSyncConfig, toPackageFileContent,
@@ -91,7 +91,7 @@ export async function POST(request: NextRequest) {
       // Use the same config generator as embedded mode for consistency.
       // Generate/inject the webhook secret so the produced automations authenticate.
       const webhookSecret = await getOrCreateWebhookSecret();
-      const config = generateHAConfig(printers, webhookUrl, webhookUrl, webhookSecret);
+      const config = generateHAConfig(printers, webhookUrl, webhookSecret);
 
       // Return printer registration data so the frontend can register
       // automations in the same per-printer format as auto-configure
@@ -202,12 +202,7 @@ export async function POST(request: NextRequest) {
       // Generate configuration. Generate/inject the webhook secret so the
       // produced automations authenticate to the webhook.
       const webhookSecret = await getOrCreateWebhookSecret();
-      const config = generateHAConfig(
-        printers,
-        internalWebhookUrl,
-        internalWebhookUrl,
-        webhookSecret
-      );
+      const config = generateHAConfig(printers, internalWebhookUrl, webhookSecret);
 
       // Write config files to HA config directory
       // Addon mode: /config/ (mounted via config:rw mapping)
@@ -236,141 +231,136 @@ export async function POST(request: NextRequest) {
           console.log('No existing configuration.yaml found');
         }
 
-        if (isAddonMode()) {
-          // === ADD-ON MODE: Use HA packages to avoid conflicting top-level keys ===
-          // This prevents issues when users split their config with !include directives.
+        // Both modes write a package rather than top-level keys, which would
+        // collide with any the user already has (HA keeps the last of a
+        // duplicate key, so theirs silently stopped loading), and which works
+        // when users split their config with !include directives.
 
-          // Step 1: Strip any legacy SpoolmanSync block from configuration.yaml
-          // (from previous versions that appended directly)
-          let cleanedConfig = stripSpoolmanSyncConfig(existingConfig);
-          if (cleanedConfig !== existingConfig) {
-            console.log('Stripped legacy SpoolmanSync config block from configuration.yaml');
-          }
-
-          // Step 1b: Repair the duplicate-packages state older versions could
-          // create (issue #73): our directive inserted alongside the user's own
-          // packages: line. Remove ours so detection below finds theirs and the
-          // package file lands in the directory HA actually loads.
-          const repair = repairDuplicatePackagesDirective(cleanedConfig);
-          if (repair.repaired) {
-            cleanedConfig = repair.content;
-            console.log('Removed duplicate SpoolmanSync packages directive from configuration.yaml (issue #73 repair)');
-          }
-
-          // Step 2: Detect current packages configuration style
-          const packagesConfig = detectPackagesConfig(cleanedConfig);
-          console.log(`Detected packages style: ${packagesConfig.style}`);
-
-          // Step 3: Determine package file path and write it
-          let packageFilePath: string;
-          if (packagesConfig.style === 'directory') {
-            const dirPath = `${haConfigPath}/${packagesConfig.directoryPath}`;
-            await fs.mkdir(dirPath, { recursive: true });
-            packageFilePath = `${dirPath}/spoolmansync.yaml`;
-          } else if (packagesConfig.style === 'named') {
-            packageFilePath = `${haConfigPath}/spoolmansync_package.yaml`;
-          } else {
-            // No packages — we'll create the directory and add the directive
-            const dirPath = `${haConfigPath}/packages`;
-            await fs.mkdir(dirPath, { recursive: true });
-            packageFilePath = `${dirPath}/spoolmansync.yaml`;
-          }
-
-          const packageContent = toPackageFileContent(config.configurationAdditions);
-          await fs.writeFile(packageFilePath, packageContent, 'utf-8');
-          console.log(`Wrote package file: ${packageFilePath}`);
-
-          // If the repair moved us out of the broken duplicate state, the old
-          // package file under packages/ is orphaned (that directory is no
-          // longer referenced). Best-effort cleanup so it can't confuse anyone.
-          const legacyPackageFile = `${haConfigPath}/packages/spoolmansync.yaml`;
-          if (repair.repaired && packageFilePath !== legacyPackageFile) {
-            try {
-              await fs.unlink(legacyPackageFile);
-              console.log('Removed orphaned package file from packages/ (issue #73 repair)');
-            } catch { /* already gone — fine */ }
-          }
-
-          // Step 4: Modify configuration.yaml if needed (scenarios A and C)
-          let finalConfig = cleanedConfig;
-          let configModified = cleanedConfig !== existingConfig; // true if legacy block was stripped or repaired
-
-          if (packagesConfig.style === 'none') {
-            // Scenario A: add packages directive. This REFUSES rather than
-            // inserting a duplicate when an unrecognized packages: entry already
-            // exists (issue #73) — a loud error beats a silently broken setup.
-            const directiveResult = addPackagesDirective(finalConfig);
-            if (directiveResult.conflict) {
-              // Deliberately do NOT delete the package file that was just
-              // written: it is inert unless something includes it, and in
-              // split configs (homeassistant: !include ...) this exact path
-              // may already be loaded via an include this tool cannot see —
-              // deleting it would break a working setup.
-              return NextResponse.json({
-                error: `Cannot configure automatically: ${directiveResult.conflict}. ` +
-                  `The package file was written to ${packageFilePath}; make sure your packages configuration loads that folder, ` +
-                  'or share your configuration.yaml formatting at https://github.com/gibz104/SpoolmanSync/issues so detection can be improved.',
-              }, { status: 400 });
-            }
-            finalConfig = directiveResult.content;
-            configModified = true;
-          } else if (packagesConfig.style === 'named' && !packagesConfig.hasSpoolmansync) {
-            // Scenario C: add spoolmansync entry under existing packages block
-            const withEntry = addPackageEntry(finalConfig, packagesConfig);
-            if (withEntry === finalConfig) {
-              // The entry could not be placed — refuse loudly instead of
-              // reporting success with a package HA will never load. The
-              // written package file is left in place (inert until included).
-              return NextResponse.json({
-                error: 'Cannot configure automatically: configuration.yaml has a packages: block SpoolmanSync could not add an entry to. ' +
-                  `The package file was written to ${packageFilePath}; add "spoolmansync: !include spoolmansync_package.yaml" under your packages: block yourself, ` +
-                  'or share your configuration.yaml formatting at https://github.com/gibz104/SpoolmanSync/issues so detection can be improved.',
-              }, { status: 400 });
-            }
-            finalConfig = withEntry;
-            configModified = true;
-          }
-
-          if (configModified) {
-            // Back up before writing
-            await fs.writeFile(`${configPath}.bak`, existingConfig, 'utf-8');
-            console.log('Backed up configuration.yaml to configuration.yaml.bak');
-
-            await fs.writeFile(configPath, finalConfig, 'utf-8');
-            console.log('Wrote modified configuration.yaml');
-
-            // Validate configuration via HA API
-            try {
-              const checkResult = await haClient.checkConfig();
-              if (checkResult.result === 'invalid') {
-                console.error('Configuration validation failed:', checkResult.errors);
-
-                // Revert configuration.yaml from backup
-                await fs.writeFile(configPath, existingConfig, 'utf-8');
-                console.log('Reverted configuration.yaml from backup');
-
-                // Clean up package file
-                try { await fs.unlink(packageFilePath); } catch { /* ignore */ }
-
-                return NextResponse.json({
-                  error: `Configuration validation failed. Your configuration.yaml has been restored from backup. Error: ${checkResult.errors}`,
-                }, { status: 400 });
-              }
-              console.log('Configuration validated successfully');
-            } catch (validationError) {
-              console.warn('Could not validate configuration (HA may not support check_config):', validationError);
-              // Continue anyway — the config was written and backed up
-            }
-          }
-        } else {
-          // === EMBEDDED MODE: Append directly to configuration.yaml (SpoolmanSync controls this HA) ===
-          const mergedConfig = mergeConfiguration(existingConfig, config.configurationAdditions);
-          await fs.writeFile(configPath, mergedConfig, 'utf-8');
-          console.log('Wrote configuration.yaml');
+        // Step 1: Strip the block versions before packages appended to
+        // configuration.yaml, which also held the old usage-tracking helpers.
+        let cleanedConfig = stripSpoolmanSyncConfig(existingConfig);
+        if (cleanedConfig !== existingConfig) {
+          console.log('Stripped legacy SpoolmanSync config block from configuration.yaml');
         }
 
-        // YAML-configured entities (input_number, utility_meter, template, rest_command)
-        // require a restart to be created - automation.reload is not sufficient.
+        // Step 1b: Repair the duplicate-packages state older versions could
+        // create (issue #73): our directive inserted alongside the user's own
+        // packages: line. Remove ours so detection below finds theirs and the
+        // package file lands in the directory HA actually loads.
+        const repair = repairDuplicatePackagesDirective(cleanedConfig);
+        if (repair.repaired) {
+          cleanedConfig = repair.content;
+          console.log('Removed duplicate SpoolmanSync packages directive from configuration.yaml (issue #73 repair)');
+        }
+
+        // Step 2: Detect current packages configuration style
+        const packagesConfig = detectPackagesConfig(cleanedConfig);
+        console.log(`Detected packages style: ${packagesConfig.style}`);
+
+        // Step 3: Determine package file path and write it
+        let packageFilePath: string;
+        if (packagesConfig.style === 'directory') {
+          const dirPath = `${haConfigPath}/${packagesConfig.directoryPath}`;
+          await fs.mkdir(dirPath, { recursive: true });
+          packageFilePath = `${dirPath}/spoolmansync.yaml`;
+        } else if (packagesConfig.style === 'named') {
+          packageFilePath = `${haConfigPath}/spoolmansync_package.yaml`;
+        } else {
+          // No packages — we'll create the directory and add the directive
+          const dirPath = `${haConfigPath}/packages`;
+          await fs.mkdir(dirPath, { recursive: true });
+          packageFilePath = `${dirPath}/spoolmansync.yaml`;
+        }
+
+        const packageContent = toPackageFileContent(config.configurationAdditions);
+        await fs.writeFile(packageFilePath, packageContent, 'utf-8');
+        console.log(`Wrote package file: ${packageFilePath}`);
+
+        // If the repair moved us out of the broken duplicate state, the old
+        // package file under packages/ is orphaned (that directory is no
+        // longer referenced). Best-effort cleanup so it can't confuse anyone.
+        const legacyPackageFile = `${haConfigPath}/packages/spoolmansync.yaml`;
+        if (repair.repaired && packageFilePath !== legacyPackageFile) {
+          try {
+            await fs.unlink(legacyPackageFile);
+            console.log('Removed orphaned package file from packages/ (issue #73 repair)');
+          } catch { /* already gone — fine */ }
+        }
+
+        // Step 4: Modify configuration.yaml if needed (scenarios A and C)
+        let finalConfig = cleanedConfig;
+        let configModified = cleanedConfig !== existingConfig; // true if legacy block was stripped or repaired
+
+        if (packagesConfig.style === 'none') {
+          // Scenario A: add packages directive. This REFUSES rather than
+          // inserting a duplicate when an unrecognized packages: entry already
+          // exists (issue #73) — a loud error beats a silently broken setup.
+          const directiveResult = addPackagesDirective(finalConfig);
+          if (directiveResult.conflict) {
+            // Deliberately do NOT delete the package file that was just
+            // written: it is inert unless something includes it, and in
+            // split configs (homeassistant: !include ...) this exact path
+            // may already be loaded via an include this tool cannot see —
+            // deleting it would break a working setup.
+            return NextResponse.json({
+              error: `Cannot configure automatically: ${directiveResult.conflict}. ` +
+                `The package file was written to ${packageFilePath}; make sure your packages configuration loads that folder, ` +
+                'or share your configuration.yaml formatting at https://github.com/gibz104/SpoolmanSync/issues so detection can be improved.',
+            }, { status: 400 });
+          }
+          finalConfig = directiveResult.content;
+          configModified = true;
+        } else if (packagesConfig.style === 'named' && !packagesConfig.hasSpoolmansync) {
+          // Scenario C: add spoolmansync entry under existing packages block
+          const withEntry = addPackageEntry(finalConfig, packagesConfig);
+          if (withEntry === finalConfig) {
+            // The entry could not be placed — refuse loudly instead of
+            // reporting success with a package HA will never load. The
+            // written package file is left in place (inert until included).
+            return NextResponse.json({
+              error: 'Cannot configure automatically: configuration.yaml has a packages: block SpoolmanSync could not add an entry to. ' +
+                `The package file was written to ${packageFilePath}; add "spoolmansync: !include spoolmansync_package.yaml" under your packages: block yourself, ` +
+                'or share your configuration.yaml formatting at https://github.com/gibz104/SpoolmanSync/issues so detection can be improved.',
+            }, { status: 400 });
+          }
+          finalConfig = withEntry;
+          configModified = true;
+        }
+
+        if (configModified) {
+          // Back up before writing
+          await fs.writeFile(`${configPath}.bak`, existingConfig, 'utf-8');
+          console.log('Backed up configuration.yaml to configuration.yaml.bak');
+
+          await fs.writeFile(configPath, finalConfig, 'utf-8');
+          console.log('Wrote modified configuration.yaml');
+
+          // Validate configuration via HA API
+          try {
+            const checkResult = await haClient.checkConfig();
+            if (checkResult.result === 'invalid') {
+              console.error('Configuration validation failed:', checkResult.errors);
+
+              // Revert configuration.yaml from backup
+              await fs.writeFile(configPath, existingConfig, 'utf-8');
+              console.log('Reverted configuration.yaml from backup');
+
+              // Clean up package file
+              try { await fs.unlink(packageFilePath); } catch { /* ignore */ }
+
+              return NextResponse.json({
+                error: `Configuration validation failed. Your configuration.yaml has been restored from backup. Error: ${checkResult.errors}`,
+              }, { status: 400 });
+            }
+            console.log('Configuration validated successfully');
+          } catch (validationError) {
+            console.warn('Could not validate configuration (HA may not support check_config):', validationError);
+            // Continue anyway — the config was written and backed up
+          }
+        }
+
+        // YAML-configured entities (rest_command, and removing the old usage
+        // helpers) require a restart to take effect - automation.reload is not sufficient.
         // In embedded mode, restart automatically (dedicated HA instance, nothing else running).
         // In addon mode, let the user decide when to restart (other integrations may be affected).
         if (isEmbeddedMode()) {

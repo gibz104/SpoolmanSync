@@ -7,6 +7,7 @@ import { SummaryCards } from '@/components/reports/summary-cards';
 import { UsageBySpool } from '@/components/reports/usage-by-spool';
 import { UsageOverTime } from '@/components/reports/usage-over-time';
 import type { SpoolData } from '@/components/reports/usage-by-spool';
+import { RecentPrints, type RecentPrint, type TrackerStatus } from '@/components/reports/recent-prints';
 
 interface TimeBucket {
   date: string;
@@ -29,6 +30,7 @@ export default function ReportsPage() {
   const [data, setData] = useState<ReportData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<{ tracker: TrackerStatus | null; prints: RecentPrint[] } | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const bucket = selectedDays !== null && selectedDays > 90 ? 'week' : 'day';
@@ -51,6 +53,8 @@ export default function ReportsPage() {
       if (!res.ok) throw new Error('Failed to fetch report');
       const json: ReportData = await res.json();
       setData(json);
+      const usageRes = await fetch('/api/usage');
+      if (usageRes.ok) setUsage(await usageRes.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load report');
     } finally {
@@ -168,6 +172,7 @@ export default function ReportsPage() {
             </div>
           </div>
         ) : null}
+        {usage && <div className="mt-6"><RecentPrints prints={usage.prints} tracker={usage.tracker} /></div>}
       </main>
     </div>
   );

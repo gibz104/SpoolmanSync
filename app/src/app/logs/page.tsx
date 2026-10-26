@@ -271,6 +271,8 @@ export default function LogsPage() {
         return 'Empty Tray';
       case 'tag_stored':
         return 'Tag Stored';
+      case 'usage_attention':
+        return 'Check Usage';
       case 'error':
         return 'Error';
       case 'connection':

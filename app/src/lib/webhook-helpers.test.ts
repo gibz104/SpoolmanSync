@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyTrayState, lengthToWeight, isValidTrayUuid, isActivePrintState, MATERIAL_DENSITY } from './webhook-helpers';
+import { classifyTrayState, filamentWeight, isValidTrayUuid, isActivePrintState, MATERIAL_DENSITY } from './webhook-helpers';
 
 describe('classifyTrayState (issue #65 — never clear on transient states)', () => {
   it('treats unavailable/unknown/missing as transient (must NOT clear assignment)', () => {
@@ -24,27 +24,22 @@ describe('classifyTrayState (issue #65 — never clear on transient states)', ()
   });
 });
 
-describe('lengthToWeight (Creality cm → g conversion)', () => {
-  it('converts using PLA density by default', () => {
+describe('filamentWeight (Creality cm → g conversion)', () => {
+  it('uses the density and diameter Spoolman has for the filament', () => {
     // volume = π * 0.0875^2 * 100 = 2.40528 cm³; * 1.24 = 2.9825 g
-    expect(lengthToWeight(100)).toBeCloseTo(2.9825, 3);
-    expect(lengthToWeight(100, 'PLA')).toBeCloseTo(2.9825, 3);
+    expect(filamentWeight(100, { density: 1.24, diameter: 1.75 })).toBeCloseTo(2.9825, 3);
+    expect(filamentWeight(100, { density: 1.24, diameter: 2.85 })).toBeCloseTo(Math.PI * 0.1425 ** 2 * 100 * 1.24, 3);
   });
 
-  it('uses material-specific density', () => {
-    expect(lengthToWeight(100, 'ABS')).toBeCloseTo(2.40528 * MATERIAL_DENSITY.ABS, 3);
-    // denser material → heavier for same length
-    expect(lengthToWeight(100, 'PETG')).toBeGreaterThan(lengthToWeight(100, 'ABS'));
-  });
-
-  it('is case-insensitive and falls back to PLA for unknown materials', () => {
-    expect(lengthToWeight(50, 'pla')).toBeCloseTo(lengthToWeight(50, 'PLA'), 6);
-    expect(lengthToWeight(50, 'WoodFill')).toBeCloseTo(lengthToWeight(50, 'PLA'), 6);
+  it('falls back to the material table, then PLA, and to 1.75mm', () => {
+    expect(filamentWeight(100, { material: 'abs' })).toBeCloseTo(2.40528 * MATERIAL_DENSITY.ABS, 3);
+    expect(filamentWeight(100, { material: 'WoodFill' })).toBeCloseTo(2.9825, 3);
+    expect(filamentWeight(100)).toBeCloseTo(2.9825, 3);
   });
 
   it('scales linearly with length and is zero at zero', () => {
-    expect(lengthToWeight(0)).toBe(0);
-    expect(lengthToWeight(200)).toBeCloseTo(2 * lengthToWeight(100), 6);
+    expect(filamentWeight(0)).toBe(0);
+    expect(filamentWeight(200)).toBeCloseTo(2 * filamentWeight(100), 6);
   });
 });
 

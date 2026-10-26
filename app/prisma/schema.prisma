@@ -57,3 +57,37 @@ model ActivityLog {
   details   String?  // JSON string for additional data
   createdAt DateTime @default(now())
 }
+
+// Filament usage tracked by SpoolmanSync itself (see src/lib/usage): one row per print
+model PrintSession {
+  id         String           @id @default(cuid())
+  printer    String           // printer prefix
+  name       String?          // job name the printer reported
+  startedAt  DateTime
+  endedAt    DateTime?        // null while the print is running
+  outcome    String?          // finished | failed | cancelled | ended | interrupted | abandoned
+  settled    Boolean          @default(false) // every deduction for this print has been made
+  attention  String?          // why the user should check this print, if anything
+  state      String           // JSON, see SessionState in src/lib/usage/session.ts
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  deductions UsageDeduction[]
+
+  @@index([printer, endedAt])
+  @@index([settled])
+}
+
+// One write to Spoolman's /use endpoint for a print
+model UsageDeduction {
+  id        String       @id @default(cuid())
+  sessionId String
+  session   PrintSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  trayKey   String
+  spoolId   Int
+  amount    Float        // in the print's unit: grams (Bambu) or cm (Creality)
+  grams     Float
+  status    String       // pending | done | uncertain
+  createdAt DateTime     @default(now())
+
+  @@index([sessionId])
+}

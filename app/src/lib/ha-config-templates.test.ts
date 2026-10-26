@@ -74,7 +74,7 @@ type Automation = {
 
 describe('generated automations', () => {
   it.each(PRINTERS)('%s: every variable a template references is declared', (_label, printer) => {
-    const { automationsYaml } = generateHAConfig([printer], 'http://hook', 'http://hook');
+    const { automationsYaml } = generateHAConfig([printer], 'http://hook');
     const automations = parseYaml(automationsYaml) as Automation[];
     expect(automations.length).toBeGreaterThan(0);
 
@@ -90,7 +90,7 @@ describe('generated automations', () => {
   });
 
   it.each(PRINTERS)('%s: every rest_command placeholder is supplied or defaulted', (_label, printer) => {
-    const { automationsYaml, configurationAdditions } = generateHAConfig([printer], 'http://hook', 'http://hook');
+    const { automationsYaml, configurationAdditions } = generateHAConfig([printer], 'http://hook');
     const config = parseYaml(configurationAdditions) as { rest_command: Record<string, { payload: string }> };
 
     // Each rest_command call site, with the data keys it actually passes.
@@ -111,12 +111,9 @@ describe('generated automations', () => {
 
     for (const { command, supplied } of callSites) {
       const payload = config.rest_command[command].payload;
-      const required = [...templateRefs(payload)].filter(placeholder =>
-        !BUILTINS.has(placeholder)
-        // `| default(...)` makes a placeholder optional — Bambu deliberately
-        // omits filament_used_length, and Creality omits filament_used_weight.
-        && !new RegExp(`\\{\\{\\s*${placeholder}\\s*\\|\\s*default\\(`).test(payload)
-      );
+      // Every placeholder is defaulted so a missing one cannot break the JSON,
+      // which is exactly why the call site has to be checked for supplying it.
+      const required = [...templateRefs(payload)].filter(placeholder => !BUILTINS.has(placeholder));
       const missing = required.filter(p => !supplied.has(p));
       expect(missing, `${printer.prefix} / ${command}`).toEqual([]);
     }

@@ -2,6 +2,7 @@
  * Simple event emitter for server-side events
  * Used to broadcast spool updates to connected SSE clients
  */
+import { processGlobal } from './process-global';
 
 type EventCallback = (data: unknown) => void;
 
@@ -34,8 +35,9 @@ class EventEmitter {
   }
 }
 
-// Singleton instance for app-wide event broadcasting
-export const spoolEvents = new EventEmitter();
+// Singleton instance for app-wide event broadcasting. Process-global because the
+// usage tracker emits from a different module graph than the SSE route listens in.
+export const spoolEvents = processGlobal('events', () => new EventEmitter());
 
 // Event types
 export const SPOOL_UPDATED = 'spool_updated';

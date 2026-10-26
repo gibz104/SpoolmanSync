@@ -368,7 +368,7 @@ export default function Dashboard() {
                 <AlertTitle>Automations Out of Date</AlertTitle>
                 <AlertDescription>
                   Entity IDs in Home Assistant have changed since automations were last configured.
-                  Tray change detection and filament usage tracking may not work until you reconfigure.{' '}
+                  Tray change detection may not work until you reconfigure.{' '}
                   <Link href="/automations" className="underline hover:no-underline font-medium">
                     Reconfigure Automations
                   </Link>

@@ -323,7 +323,7 @@ export default function AutomationsPage() {
                   <Badge variant="secondary">{addonMode ? 'Add-on Mode' : 'Embedded Mode'}</Badge>
                 </CardTitle>
                 <CardDescription>
-                  SpoolmanSync automatically tracks filament usage and syncs with Spoolman when prints complete or trays change.
+                  Home Assistant tells SpoolmanSync when a spool is inserted or removed. Filament usage is tracked by SpoolmanSync itself and needs no automation.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -341,8 +341,7 @@ export default function AutomationsPage() {
                       <span className="font-medium">Automations Configured</span>
                     </div>
                     <p className="text-sm text-green-600 dark:text-green-400 mt-1">
-                      SpoolmanSync is actively tracking your printer trays. When you change filaments or finish a print,
-                      the usage will be automatically synced with Spoolman.
+                      SpoolmanSync is watching your printer trays: when you swap a spool, its assignment is updated automatically.
                     </p>
                   </div>
                 ) : printerCount === 0 ? (
@@ -372,13 +371,13 @@ export default function AutomationsPage() {
                 ) : (
                   <div className="p-4 bg-blue-50 dark:bg-blue-950 rounded-lg border border-blue-200 dark:border-blue-800">
                     <p className="text-sm text-blue-700 dark:text-blue-300 mb-3">
-                      Click the button below to automatically configure Home Assistant to track your printer&apos;s filament usage.
+                      Click the button below to automatically configure Home Assistant to report tray changes to SpoolmanSync.
                       This will:
                     </p>
                     <ul className="list-disc list-inside text-sm text-blue-600 dark:text-blue-400 space-y-1 mb-4">
                       <li>Create automations to detect tray changes</li>
-                      <li>Track filament usage during prints</li>
-                      <li>Sync usage data with Spoolman when prints complete</li>
+                      <li>Auto-assign Bambu spools by their RFID serial, and clear trays that are emptied</li>
+                      <li>Remove the usage-tracking helpers earlier versions added</li>
                     </ul>
                     <Button
                       onClick={autoConfigure}
@@ -601,8 +600,15 @@ export default function AutomationsPage() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <ol className="list-decimal list-inside space-y-2 text-sm">
-                    <li>Copy the <strong>configuration.yaml</strong> content above and add it to your Home Assistant <code>configuration.yaml</code> file</li>
-                    <li>Copy the <strong>automations.yaml</strong> content above and add it to your Home Assistant <code>automations.yaml</code> file</li>
+                    <li>
+                      Copy the <strong>configuration.yaml</strong> content above and add it to your Home Assistant <code>configuration.yaml</code> file.
+                      If an earlier version&apos;s SpoolmanSync block is already there, replace it: usage is now tracked by SpoolmanSync itself,
+                      so its <code>input_number</code>, <code>utility_meter</code> and <code>template</code> entries are no longer needed
+                    </li>
+                    <li>
+                      Copy the <strong>automations.yaml</strong> content above and add it to your Home Assistant <code>automations.yaml</code> file,
+                      replacing any <code>spoolmansync_</code> automations from an earlier version
+                    </li>
                     <li>
                       <strong>Fully restart Home Assistant</strong> (Developer Tools → YAML → Restart Home Assistant,
                       or Settings → System → Restart)
@@ -613,10 +619,9 @@ export default function AutomationsPage() {
                   <Alert>
                     <AlertDescription>
                       A full restart is required — <strong>reloading automations is not enough</strong>. The
-                      <code className="mx-1">input_number</code>, <code className="mx-1">utility_meter</code>,
-                      <code className="mx-1">template</code> and <code className="mx-1">rest_command</code> entries
-                      above are only created on restart. Without it the automations load but no filament weight is
-                      ever deducted.
+                      <code className="mx-1">rest_command</code> above is only created on restart. Without it the
+                      automations load but tray changes never reach SpoolmanSync. Filament usage does not depend on
+                      this: SpoolmanSync reads it from your printers directly.
                     </AlertDescription>
                   </Alert>
 

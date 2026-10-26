@@ -44,6 +44,8 @@ export interface HAPrinter {
   current_stage_entity?: string;
   print_weight_entity?: string;
   print_progress_entity?: string;
+  job_name_entity?: string;    // Bambu subtask_name: the job the printer is running
+  gcode_file_entity?: string;  // Bambu gcode_file
   used_material_entity?: string;  // Creality's used_material_length sensor (cm)
   is_virtual?: boolean;  // True for user-defined virtual printers (dry boxes/dryers)
 }
@@ -653,6 +655,17 @@ export class HomeAssistantClient {
     return response.json();
   }
 
+  /** Base URL this client talks to (the Supervisor proxy in add-on mode). */
+  get url(): string {
+    return this.baseUrl;
+  }
+
+  /** A currently valid access token, for the usage tracker's long-lived WebSocket. */
+  async currentAccessToken(): Promise<string | null> {
+    await this.ensureValidToken();
+    return this.accessToken;
+  }
+
   /**
    * Check if connection is valid
    */
@@ -960,6 +973,8 @@ export class HomeAssistantClient {
         current_stage_entity: findPrinterEntity('stage')?.entity_id,
         print_weight_entity: findPrinterEntity('print_weight')?.entity_id,
         print_progress_entity: findPrinterEntity('print_progress')?.entity_id,
+        job_name_entity: findPrinterEntity('subtask_name')?.entity_id,
+        gcode_file_entity: findPrinterEntity('gcode_file')?.entity_id,
       };
 
       printers.push(printer);
@@ -1177,6 +1192,12 @@ export class HomeAssistantClient {
       }
     }
     return map;
+  }
+
+  /** Remove entries from HA's entity registry (orphans whose configuration is gone). */
+  async removeRegistryEntities(entityIds: string[]): Promise<void> {
+    if (entityIds.length === 0) return;
+    await this.wsCommand(entityIds.map(entity_id => ({ type: 'config/entity_registry/remove', entity_id })));
   }
 
   /**
@@ -1484,7 +1505,7 @@ function getEffectiveTranslationKey(entity: EntityRegistryEntry): string | null 
 
   // Fallback: extract known key from unique_id suffix (old ha-bambulab without translation_key)
   const knownKeys = [
-    'print_status', 'print_weight', 'print_progress', 'print_length',
+    'print_status', 'print_weight', 'print_progress', 'print_length', 'subtask_name', 'gcode_file',
     'tray_1', 'tray_2', 'tray_3', 'tray_4',
     'external_spool', 'humidity_index', 'active_tray', 'stage',
   ];

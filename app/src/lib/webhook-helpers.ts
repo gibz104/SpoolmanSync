@@ -12,9 +12,8 @@ export function isValidTrayUuid(tray_uuid: string | undefined | null): boolean {
 }
 
 /**
- * Material density lookup (g/cm³) for converting filament length to weight.
- * Used when Creality printers report usage in cm instead of grams.
- * Standard filament diameter: 1.75mm
+ * Material density lookup (g/cm³), for converting a Creality printer's
+ * filament length to weight when Spoolman has no density for the filament.
  */
 export const MATERIAL_DENSITY: Record<string, number> = {
   PLA: 1.24,
@@ -32,14 +31,15 @@ export const MATERIAL_DENSITY: Record<string, number> = {
 };
 
 /**
- * Convert filament length (cm) to weight (grams).
- * Uses filament diameter of 1.75mm and material-specific density.
+ * Weight (g) of `lengthCm` of a spool's filament, from the density and diameter
+ * Spoolman records for it, falling back to the material table and 1.75mm.
  */
-export function lengthToWeight(lengthCm: number, material?: string): number {
-  const radiusCm = 0.0875; // 1.75mm / 2, converted to cm
-  const volumeCm3 = Math.PI * radiusCm * radiusCm * lengthCm;
-  const density = (material && MATERIAL_DENSITY[material.toUpperCase()]) || MATERIAL_DENSITY.PLA;
-  return volumeCm3 * density;
+export function filamentWeight(lengthCm: number, filament?: { density?: number; diameter?: number; material?: string }): number {
+  const density = filament?.density && filament.density > 0
+    ? filament.density
+    : (filament?.material && MATERIAL_DENSITY[filament.material.toUpperCase()]) || MATERIAL_DENSITY.PLA;
+  const radiusCm = (filament?.diameter && filament.diameter > 0 ? filament.diameter : 1.75) / 20;
+  return Math.PI * radiusCm * radiusCm * lengthCm * density;
 }
 
 /**

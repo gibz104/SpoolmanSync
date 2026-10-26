@@ -266,7 +266,7 @@ export class SpoolmanClient {
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Spoolman API error: ${response.status} - ${error}`);
+      throw Object.assign(new Error(`Spoolman API error: ${response.status} - ${error}`), { status: response.status });
     }
 
     return response.json();
@@ -534,12 +534,13 @@ export class SpoolmanClient {
   }
 
   /**
-   * Update spool weight (use filament)
+   * Update spool weight (use filament). A negative weight gives filament back.
    */
-  async useWeight(spoolId: number, weight: number): Promise<void> {
-    await this.fetch(`/spool/${spoolId}/use`, {
+  async useWeight(spoolId: number, weight: number, timeoutMs = 30_000): Promise<Spool> {
+    return this.fetch(`/spool/${spoolId}/use`, {
       method: 'PUT',
       body: JSON.stringify({ use_weight: weight }),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   }
 

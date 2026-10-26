@@ -3,6 +3,7 @@ import { SpoolmanClient, Spool } from '@/lib/api/spoolman';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { createActivityLog } from '@/lib/activity-log';
 import { spoolEvents, ALERT_UPDATED } from '@/lib/events';
+import { processGlobal } from '@/lib/process-global';
 
 export type ThresholdType = 'percentage' | 'grams';
 export type GroupingStrategy = 'material' | 'material_name' | 'material_name_vendor';
@@ -176,13 +177,14 @@ function sanitizeForNotificationId(key: string): string {
 // concurrent runs could read the same previous state and clobber each other's
 // diff. A DB transaction can't span those external calls, so we serialize at
 // the module level with a promise chain. Each run waits for the previous to
-// settle (success or failure) before starting.
-let alertChain: Promise<unknown> = Promise.resolve();
+// settle (success or failure) before starting. Process-global so the usage
+// tracker and the route handlers share one chain.
+const alertChain = processGlobal('alerts', () => ({ tail: Promise.resolve() as Promise<unknown> }));
 
 export function checkAndUpdateAlerts(): Promise<ActiveAlert[]> {
-  const next = alertChain.then(runCheck, runCheck);
+  const next = alertChain.tail.then(runCheck, runCheck);
   // Keep the chain alive regardless of this run's outcome.
-  alertChain = next.catch(() => {});
+  alertChain.tail = next.catch(() => {});
   return next;
 }
 
