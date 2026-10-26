@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { renamedTrayUniqueId } from '@/lib/tray-id';
 import prisma from '@/lib/db';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { SpoolmanClient } from '@/lib/api/spoolman';
@@ -91,21 +92,8 @@ export async function GET() {
           // Try exact match first (entity hasn't been renamed)
           let uniqueId = entityIdToUniqueId.get(cleanId);
 
-          // Fallback: if the entity was renamed, the old entity_id won't be in
-          // the map. Try to match by finding a unique_id whose tray suffix
-          // matches the entity_id's suffix (e.g., both end with "_tray_1").
-          if (!uniqueId) {
-            const trayMatch = cleanId.match(/_(tray_\d+|external_spool\d*)$/);
-            if (trayMatch) {
-              const suffix = trayMatch[0]; // e.g., "_tray_1"
-              for (const uid of allUniqueIds) {
-                if (uid.endsWith(suffix)) {
-                  uniqueId = uid;
-                  break;
-                }
-              }
-            }
-          }
+          // Fallback: the entity was renamed, so the old entity_id isn't in the map.
+          uniqueId ??= renamedTrayUniqueId(cleanId, allUniqueIds);
 
           if (uniqueId) {
             const newExtra: Record<string, string> = {};
