@@ -26,8 +26,19 @@ echo "Direct access port: $DIRECT_PORT"
 
 # Read the ingress port assigned by Supervisor (dynamic, avoids conflicts with other add-ons)
 INGRESS_PORT=$(curl -s -X GET "http://supervisor/addons/self/info" \
-  -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" | jq -r '.data.ingress_port // 8099')
+  -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" | jq -r '.data.ingress_port // empty' 2>/dev/null || true)
+if ! printf '%s' "$INGRESS_PORT" | grep -Eq '^[1-9][0-9]{0,4}$'; then
+    echo "Warning: could not read the ingress port from the Supervisor (got '${INGRESS_PORT}'); using 8099"
+    INGRESS_PORT=8099
+fi
 echo "Ingress port: $INGRESS_PORT"
+
+# The sidebar depends on the ingress port, so a direct port that collides with it gives way.
+if [ "$DIRECT_PORT" -eq "$INGRESS_PORT" ]; then
+    echo "Warning: port ${DIRECT_PORT} is the ingress port; using $((DIRECT_PORT + 1)) for direct access"
+    DIRECT_PORT=$((DIRECT_PORT + 1))
+    export DIRECT_ACCESS_PORT="$DIRECT_PORT"
+fi
 
 # Derive internal Next.js port from direct port (+1) to avoid conflicts on host_network
 INTERNAL_PORT=$((DIRECT_PORT + 1))
@@ -38,10 +49,9 @@ fi
 export PORT="$INTERNAL_PORT"
 echo "Internal Next.js port: $INTERNAL_PORT"
 
-# Update nginx config with the configured ports
-sed -i "s/listen 3000;/listen ${DIRECT_PORT};/" /etc/nginx/http.d/default.conf
-sed -i "s/listen 8099;/listen ${INGRESS_PORT};/" /etc/nginx/http.d/default.conf
-sed -i "s/127.0.0.1:3001/127.0.0.1:${INTERNAL_PORT}/g" /etc/nginx/http.d/default.conf
+# Fill in the nginx template with the ports
+sed -i "s/__DIRECT_PORT__/${DIRECT_PORT}/g; s/__INGRESS_PORT__/${INGRESS_PORT}/g; s/__INTERNAL_PORT__/${INTERNAL_PORT}/g" \
+  /etc/nginx/http.d/default.conf
 
 # Supervisor token is automatically available
 if [ -n "$SUPERVISOR_TOKEN" ]; then
