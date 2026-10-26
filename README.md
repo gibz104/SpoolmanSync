@@ -15,7 +15,7 @@ No YAML editing. No Home Assistant expertise required.
 - **Web dashboard** — view printers, AMS/CFS units, and tray assignments at a glance
 - **Click-to-assign** — pick spools from your Spoolman inventory with search and filters
 - **Multi-brand support** — Bambu Lab and Creality printers side-by-side on one dashboard
-- **Automatic usage tracking** — filament weight deducted from the correct spool when prints complete
+- **Automatic usage tracking** — SpoolmanSync follows each print in Home Assistant and deducts the filament from the spool in each tray as it prints, settling to the slicer's per-tray figures when the print finishes
 - **QR & NFC** — scan Spoolman QR codes, print your own QR labels, or write NFC stickers for instant assignment
 - **Low stock alerts** — Home Assistant notifications when you're down to your last spool of a type
 - **Multi-AMS / multi-CFS** — works with any combination of units per printer
@@ -64,14 +64,18 @@ After any install mode:
 
 1. **Connect Spoolman** — enter your Spoolman URL in **Settings**
 2. **Add printers** — in add-on or embedded mode, click **Add Printer** and pick Bambu Lab or Creality; in external mode printers are auto-discovered
-3. **Generate automations** — go to **Automations** and click **Configure Automations**. In add-on/embedded mode this is one click. In external mode you'll copy the generated YAML into your HA `configuration.yaml` and `automations.yaml`, restart HA, then click **Mark as Configured**
-4. **Assign spools** — click any tray on the dashboard to assign a spool from Spoolman
+3. **Assign spools** — click any tray on the dashboard to assign a spool from Spoolman
+4. **Generate automations** (for tray changes) — go to **Automations** and click **Configure Automations**. In add-on/embedded mode this is one click. In external mode you'll copy the generated YAML into your HA `configuration.yaml` and `automations.yaml`, restart HA, then click **Mark as Configured**. These let SpoolmanSync auto-assign Bambu spools by their RFID tag and clear a tray you empty; usage tracking does not depend on them
 
-That's it. When prints complete, filament weight is automatically deducted from the assigned spool.
+That's it. As you print, filament is deducted from the assigned spools, and each print is listed under **Reports → Recent Prints**.
+
+**Upgrading from 1.6 or earlier?** Usage used to be tracked by generated Home Assistant helpers and automations. Re-run **Configure Automations** (or, in external mode, replace the SpoolmanSync YAML you copied into Home Assistant) to remove them. Until then their usage reports are ignored, so nothing is deducted twice. Run one SpoolmanSync per Home Assistant and Spoolman: every install connected to them now deducts usage, so a second one (a test install beside your usual one, say) deducts each print again.
 
 ## How It Works
 
-SpoolmanSync discovers your printers and their AMS/CFS trays from Home Assistant (via ha-bambulab or ha_creality_ws). When you assign a spool to a tray, the assignment is stored in Spoolman's `extra.active_tray` field. Home Assistant automations send webhook events on tray changes and print completion, and SpoolmanSync deducts filament weight from the correct spool in Spoolman.
+SpoolmanSync discovers your printers and their AMS/CFS trays from Home Assistant (via ha-bambulab or ha_creality_ws). When you assign a spool to a tray, the assignment is stored in Spoolman's `extra.active_tray` field.
+
+Usage is tracked by SpoolmanSync itself: it follows each printer's entities over Home Assistant's WebSocket API and works out what every tray has used so far. For Bambu Lab that is the slicer's plate weight times the print progress, settled to the slicer's per-tray figures when a print finishes; for Creality it is the length the printer reports extruding, converted with the spool's density and diameter from Spoolman. Spoolman is updated as the print runs, and each print is recorded once it ends. If Spoolman is unreachable, what a print owes is kept and deducted when it is back. The generated Home Assistant automations only report tray changes.
 
 Spool matching works in three ways:
 - **Manual assignment** (all vendors) — click a tray, pick a spool
@@ -95,7 +99,9 @@ Alerts fire only when you're on your *last* spool of a group — no noise from p
 
 **QR scanner or NFC not working** — browsers require HTTPS for camera and NFC access from non-`localhost` addresses. Use a reverse proxy, Tailscale, or access via `http://localhost:3000` on the same machine. Web NFC is Android-only (Chrome, Edge, Opera, Samsung Internet).
 
-**Creality filament weight looks wrong** — ha_creality_ws reports filament usage in length (cm), which SpoolmanSync converts to weight using material density (PLA 1.24 g/cm³, PETG 1.27, ABS 1.04, etc., 1.75mm default diameter). For most common materials the conversion is accurate; exotic filaments may vary slightly.
+**Creality filament weight looks wrong** — ha_creality_ws reports filament usage as a length, which SpoolmanSync converts to weight with the density and diameter of the spool's filament in Spoolman. Check those values in Spoolman if a spool's deductions look off.
+
+**A print shows a warning under Recent Prints** — SpoolmanSync deducts nothing it cannot account for, and says why instead: the printer never reported the print's weight (on a Bambu printer, a different print of exactly the same weight as the one before also reads this way, because Home Assistant shows no change), a tray that fed it had no spool assigned, or Spoolman did not confirm a deduction (check that spool's weight). The same notes appear on the Logs page.
 
 ## Links
 

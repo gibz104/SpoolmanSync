@@ -178,7 +178,7 @@ function bambuEnd(s: SessionState, outcome: Outcome): Ended {
   if (s.runningSince === null) return end(s, outcome, s.used);
   if (!s.plate) {
     return end(s, outcome, s.used, total(s.used) > 0 ? null
-      : 'The printer never reported this print\'s weight, so nothing was deducted.');
+      : 'The printer never reported this print\'s weight (Home Assistant shows no change when it matches the last print\'s), so nothing was deducted.');
   }
   if (outcome !== 'finished') return end(s, outcome, s.used);
 

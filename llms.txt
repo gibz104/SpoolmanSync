@@ -1,6 +1,6 @@
 # SpoolmanSync
 
-> SpoolmanSync is a Next.js web application that automatically tracks filament spools loaded in 3D printers (Bambu Lab and Creality) and keeps Spoolman inventory in sync via Home Assistant. Filament weight is automatically deducted from the correct spool when prints complete. Provides a modern web UI for spool assignment — no YAML editing or Home Assistant expertise required.
+> SpoolmanSync is a Next.js web application that automatically tracks filament spools loaded in 3D printers (Bambu Lab and Creality) and keeps Spoolman inventory in sync via Home Assistant. SpoolmanSync follows each print in Home Assistant and deducts the filament used from the spool in each tray as it prints. Provides a modern web UI for spool assignment — no YAML editing or Home Assistant expertise required.
 
 ## Supported Printers
 
@@ -13,7 +13,7 @@ Works with filament from any vendor (Polymaker, Sunlu, Elegoo, Hatchbox, eSUN, B
 
 - Web dashboard showing all printers, AMS/CFS units, trays, and spool assignments
 - Click-to-assign spools from Spoolman inventory with search and filters
-- Automatic filament weight deduction on print completion
+- Automatic filament usage tracking: deducted per tray as a print runs, settled to the slicer's per-tray figures when it finishes, with each print listed under Reports
 - Multi-AMS and multi-CFS support (multiple filament units per printer)
 - Multi-brand printers on the same dashboard (e.g., Bambu Lab + Creality side by side)
 - QR code scanning (scan Spoolman QR codes or custom barcodes)
@@ -33,8 +33,11 @@ Works with filament from any vendor (Polymaker, Sunlu, Elegoo, Hatchbox, eSUN, B
 
 ## Filament Usage Tracking
 
-- **Bambu Lab**: Uses ha-bambulab's `print_weight` sensor (reports grams) combined with print progress for accurate per-print deduction
-- **Creality**: Uses ha_creality_ws's `used_material_length` sensor (reports cm), converted to weight via filament diameter (1.75mm) and material density lookup (PLA 1.24 g/cm³, PETG 1.27, ABS 1.04, ASA 1.07, TPU 1.21, PC 1.20, Nylon 1.14, etc.)
+Tracked by SpoolmanSync itself over Home Assistant's WebSocket API; no Home Assistant helpers or automations are involved.
+
+- **Bambu Lab**: ha-bambulab's `print_weight` (the slicer's plate weight, with per-tray grams) times print progress, charged to the tray feeding at the time and settled to the slicer's per-tray figures when a print finishes
+- **Creality**: the extruded length ha_creality_ws reports for the job, converted to weight with the density and diameter Spoolman records for the spool's filament
+- Deductions Spoolman cannot take are kept and written once it is reachable; anything that cannot be accounted for is flagged on the print rather than guessed
 
 Matching works by:
 - Manual tray assignment via the web UI (works for all vendors)
