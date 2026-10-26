@@ -1,5 +1,6 @@
+-- Re-runnable (IF NOT EXISTS), so an upgrade interrupted part way can be retried.
 -- CreateTable
-CREATE TABLE "PrintSession" (
+CREATE TABLE IF NOT EXISTS "PrintSession" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "printer" TEXT NOT NULL,
     "name" TEXT,
@@ -14,7 +15,7 @@ CREATE TABLE "PrintSession" (
 );
 
 -- CreateTable
-CREATE TABLE "UsageDeduction" (
+CREATE TABLE IF NOT EXISTS "UsageDeduction" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "sessionId" TEXT NOT NULL,
     "trayKey" TEXT NOT NULL,
@@ -27,11 +28,11 @@ CREATE TABLE "UsageDeduction" (
 );
 
 -- CreateIndex
-CREATE INDEX "PrintSession_printer_endedAt_idx" ON "PrintSession"("printer", "endedAt");
+CREATE INDEX IF NOT EXISTS "PrintSession_printer_endedAt_idx" ON "PrintSession"("printer", "endedAt");
 
 -- CreateIndex
-CREATE INDEX "PrintSession_settled_idx" ON "PrintSession"("settled");
+CREATE INDEX IF NOT EXISTS "PrintSession_settled_idx" ON "PrintSession"("settled");
 
 -- CreateIndex
-CREATE INDEX "UsageDeduction_sessionId_idx" ON "UsageDeduction"("sessionId");
+CREATE INDEX IF NOT EXISTS "UsageDeduction_sessionId_idx" ON "UsageDeduction"("sessionId");
 

@@ -63,11 +63,25 @@ fi
 # Run Prisma migrations
 echo "Running database migrations..."
 cd /app
-npx prisma migrate deploy 2>&1 || {
-    echo "Migration retry..."
-    npx prisma migrate deploy 2>&1 || echo "Migration error (non-fatal, continuing...)"
+
+# A migration that stopped part way (a full disk, say) is recorded as failed,
+# and Prisma then refuses every later migration until it is resolved. Ours are
+# re-runnable, so mark it rolled back and try once more.
+retry_failed_migration() {
+    FAILED=$(node -e "
+const db = require('better-sqlite3')(process.env.DATABASE_URL.replace(/^file:/, ''));
+const row = db.prepare('SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NULL AND rolled_back_at IS NULL').get();
+console.log(row ? row.migration_name : '');" 2>/dev/null || true)
+    [ -n "$FAILED" ] || return 1
+    echo "Retrying interrupted migration $FAILED..."
+    npx prisma migrate resolve --rolled-back "$FAILED" 2>&1 && npx prisma migrate deploy 2>&1
 }
-echo "Migrations complete."
+
+if npx prisma migrate deploy 2>&1 || retry_failed_migration; then
+    echo "Migrations complete."
+else
+    echo "Migration error (non-fatal, continuing; usage tracking will not work until it succeeds)"
+fi
 
 # Start nginx in background
 # nginx serves the configured direct access port and the Supervisor-assigned ingress port
