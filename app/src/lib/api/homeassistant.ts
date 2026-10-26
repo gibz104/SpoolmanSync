@@ -120,6 +120,16 @@ export function deviceConfigEntryId(device: {
 }
 
 /**
+ * Match a Creality entity by the key its entity_id ends with, allowing the
+ * `_2`, `_3` suffix Home Assistant adds when an object_id is already taken (two
+ * printers of the same model with no hostname, say). Missing the suffix made
+ * such a printer invisible: never listed, never assignable, never tracked.
+ */
+function crealityKey(key: string): RegExp {
+  return new RegExp(`_${key}(?:_\\d+)?$`);
+}
+
+/**
  * Check if running in embedded HA mode
  */
 export function isEmbeddedMode(): boolean {
@@ -1012,7 +1022,7 @@ export class HomeAssistantClient {
 
     // Find printer devices by print_status entity
     const printerEntities = crealityEntities.filter(e =>
-      e.entity_id.endsWith('_print_status')
+      crealityKey('print_status').test(e.entity_id)
     );
 
     const seenDevices = new Set<string>();
@@ -1025,10 +1035,11 @@ export class HomeAssistantClient {
       const printerState = stateMap.get(printerEntity.entity_id);
       const printerDevice = devices.find(d => d.id === printerEntity.device_id);
 
-      // Derive prefix from entity_id: remove "sensor." prefix and "_print_status" suffix
+      // Derive prefix from entity_id: remove "sensor." prefix and "_print_status"
+      // suffix. A collision suffix is kept: it is what tells two such printers apart.
       const prefix = printerEntity.entity_id
         .replace(/^sensor\./, '')
-        .replace(/_print_status$/, '');
+        .replace(/_print_status(_\d+)?$/, '$1');
 
       const name = printerDevice?.name_by_user || printerDevice?.name || prefix;
 
@@ -1044,7 +1055,7 @@ export class HomeAssistantClient {
       }
 
       // Find CFS slot entities by pattern matching
-      const cfsSlotPattern = /cfs_box_(\d+)_slot_(\d+)_filament$/;
+      const cfsSlotPattern = /cfs_box_(\d+)_slot_(\d+)_filament(?:_\d+)?$/;
       const slotFilamentEntities = allPrinterEntities.filter(e =>
         cfsSlotPattern.test(e.entity_id)
       );
@@ -1117,10 +1128,10 @@ export class HomeAssistantClient {
 
       // Find print-related entities
       const usedMaterialEntity = allPrinterEntities.find(e =>
-        e.entity_id.endsWith('_used_material_length')
+        crealityKey('used_material_length').test(e.entity_id)
       );
       const printProgressEntity = allPrinterEntities.find(e =>
-        e.entity_id.endsWith('_print_progress')
+        crealityKey('print_progress').test(e.entity_id)
       );
 
       printers.push({
