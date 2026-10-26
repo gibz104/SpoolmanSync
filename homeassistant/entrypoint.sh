@@ -89,17 +89,23 @@ print("update" if b > i else "keep")
 
     if [ "$decision" = "update" ]; then
         echo "Updating bundled integration: $name (bundle is newer than installed)"
-        # Stage into a temp dir and swap, so a failed copy never deletes the
-        # currently-installed integration.
-        local tmp="$dst.ssupdate"
-        rm -rf "$tmp" 2>/dev/null || true
-        if cp -r "$src" "$tmp" 2>/dev/null; then
-            rm -rf "$dst" 2>/dev/null || true
-            mv "$tmp" "$dst" 2>/dev/null || echo "Warning: could not swap in updated $name"
+        # Staged outside custom_components, where Home Assistant would load a
+        # leftover copy as another integration, and the installed copy is moved
+        # aside rather than deleted, so a swap that fails half way can be undone
+        # instead of leaving Home Assistant without the integration.
+        local staging="$CONFIG_DIR/.spoolmansync-staging"
+        rm -rf "$staging" "$dst.ssupdate" 2>/dev/null || true
+        mkdir -p "$staging" 2>/dev/null || true
+        if cp -r "$src" "$staging/$name" 2>/dev/null && mv "$dst" "$staging/$name.previous" 2>/dev/null; then
+            if ! mv "$staging/$name" "$dst" 2>/dev/null; then
+                echo "Warning: could not swap in updated $name, restoring the installed version"
+                mv "$staging/$name.previous" "$dst" 2>/dev/null || cp -r "$src" "$dst" 2>/dev/null \
+                    || echo "ERROR: $name could not be restored; restart to try again"
+            fi
         else
-            echo "Warning: copy failed for $name, keeping existing version"
-            rm -rf "$tmp" 2>/dev/null || true
+            echo "Warning: could not stage updated $name, keeping existing version"
         fi
+        rm -rf "$staging" 2>/dev/null || true
     else
         echo "Bundled integration $name is current"
     fi
