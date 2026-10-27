@@ -345,7 +345,7 @@ export class UsageTracker {
       final,
       label: key => watch.trays.find(t => t.key === key)?.label ?? key,
       entityId: key => watch.trays.find(t => t.key === key)?.entityId ?? null,
-    }, { spoolman, spools: () => this.spools(spoolman) });
+    }, { spoolman, spools: () => this.spools(spoolman, final) });
     // Spoolman is down: what is owed stays owed, and is written once it is back.
     if (result.retry) this.spoolmanDownUntil = this.deps.now() + 30_000;
 
@@ -384,8 +384,9 @@ export class UsageTracker {
     }
   }
 
-  private async spools(client?: SpoolmanClient): Promise<Spool[]> {
-    if (this.spoolCache && this.deps.now() - this.spoolCache.at < SPOOL_CACHE_MS) return this.spoolCache.spools;
+  /** Spoolman's spools, cached briefly; `fresh` for a print's final amounts, which must see the latest assignments. */
+  private async spools(client?: SpoolmanClient, fresh = false): Promise<Spool[]> {
+    if (!fresh && this.spoolCache && this.deps.now() - this.spoolCache.at < SPOOL_CACHE_MS) return this.spoolCache.spools;
     const spoolman = client ?? await this.deps.spoolman();
     if (!spoolman) return [];
     const spools = await spoolman.getSpools();

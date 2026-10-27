@@ -1,4 +1,4 @@
-import { FakeHA, FakeSpoolman, X1, K2, bambuPrinter, bambuIdle, crealityPrinter, crealityIdle, crealityFrame, refused } from './test-fixtures';
+import { FakeHA, FakeSpoolman, X1, K2, bambuPrinter, bambuIdle, crealityPrinter, crealityIdle, crealityFrame, refused, timedOut } from './test-fixtures';
 import { describe, it, expect, afterEach } from 'vitest';
 import prisma from '@/lib/db';
 import type { HAPrinter } from '@/lib/api/homeassistant';
@@ -180,6 +180,9 @@ describe('Bambu histories', () => {
       };
       const log: string[] = [];
       const unweighed = new Set<string>();
+      // Which slot each spool sits in, swapped-in spools included.
+      const slotOf = new Map([0, 1, 2, 3, 4].map(n => [SPOOL(n), n]));
+      let timeouts = 0;
 
       for (const p of prints) {
         log.push(JSON.stringify(p));
@@ -238,7 +241,8 @@ describe('Bambu histories', () => {
         await step(1_000);
 
         const disturbAt = r.int(progress + 1, Math.max(progress + 1, p.endAt));
-        const disturbance = r.pick(['none', 'none', 'ha', 'app', 'spoolman', 'offline', 'glitch'] as const);
+        const disturbance = r.pick(['none', 'none', 'ha', 'app', 'spoolman', 'offline', 'glitch', 'timeout', 'swap', 'unassign'] as const);
+        let unassigned: { spool: number; tray: string } | null = null;
         let disturbed = false;
         while (progress < p.endAt) {
           progress = Math.min(p.endAt, progress + r.int(1, 4));
@@ -264,6 +268,22 @@ describe('Bambu histories', () => {
               running = false;
             } else if (disturbance === 'spoolman') {
               spoolman.failWith = refused();
+            } else if (disturbance === 'timeout') {
+              // The next write times out; Spoolman may or may not have applied it.
+              if (r.chance(0.5)) spoolman.failNextWrite = timedOut(); else spoolman.loseNextAnswer = timedOut();
+              timeouts++;
+            } else if (disturbance === 'swap' || disturbance === 'unassign') {
+              // The feeding tray's spool is replaced by a fresh one, or left with none for a while.
+              const tray = slot === 0 ? X1.extKey : X1.key(slot);
+              const current = spoolman.spools.find(sp => sp.extra?.active_tray === JSON.stringify(tray))!;
+              spoolman.assign(current.id, null);
+              if (disturbance === 'swap') {
+                const fresh = 100 + spoolman.spools.length;
+                spoolman.add(fresh, tray);
+                slotOf.set(fresh, slot);
+              } else {
+                unassigned = { spool: current.id, tray };
+              }
             } else if (disturbance === 'offline') {
               ha.set(X1.status, 'offline');
               ha.set(X1.progress, 'unavailable');
@@ -283,6 +303,7 @@ describe('Bambu histories', () => {
             await tracker!.heartbeat();
           }
           if (spoolman.failWith && progress >= disturbAt + 10) spoolman.failWith = null;
+          if (unassigned && progress >= disturbAt + 8) { spoolman.assign(unassigned.spool, unassigned.tray); unassigned = null; }
           if (!offline) {
             ha.set(X1.progress, progress);
             shown = progress;
@@ -292,6 +313,7 @@ describe('Bambu histories', () => {
         }
         if (offline) { ha.set(X1.status, 'running'); ha.set(X1.progress, progress); offline = false; await step(1_000); seen.push([progress, slotAt(p, progress)]); }
         if (!running) { running = true; await boot(); await tracker!.heartbeat(); seen.push([progress, slotAt(p, progress)]); }
+        if (unassigned) { spoolman.assign(unassigned.spool, unassigned.tray); unassigned = null; }
         if (!named) { names(); named = late = true; }
         ha.set(X1.status, p.outcome);
         await step(1_000);
@@ -321,7 +343,10 @@ describe('Bambu histories', () => {
       }
       await settleAll();
 
-      const billed = [0, 1, 2, 3, 4].map(n => spoolman.used(SPOOL(n)));
+      const billed = [0, 1, 2, 3, 4].map(n => spoolman.spools.filter(sp => slotOf.get(sp.id) === n).reduce((a, sp) => a + spoolman.used(sp.id), 0));
+      // A write that timed out is never sent again: if it did not reach Spoolman, its grams are missing (and flagged).
+      const uncertain = (await prisma.usageDeduction.findMany({ where: { status: 'uncertain' } }));
+      const lost = spoolman.dropped.reduce((a, d) => a + d.grams, 0);
       const total = expected.reduce((a, e) => a + e.total, 0);
       const recorded = (await prisma.printSession.findMany({ orderBy: { startedAt: 'asc' }, include: { deductions: true } })).map(row => {
         const state = JSON.parse(row.state);
@@ -330,9 +355,10 @@ describe('Bambu histories', () => {
         return `${row.name} ${row.outcome} progress=${state.progress} from=${state.resumedFrom} sawStart=${state.sawStart} billed=${row.deductions.reduce((a, d) => a + d.grams, 0).toFixed(3)} ${JSON.stringify(perTray)} used=${JSON.stringify(state.used)} ${row.attention ?? ''}`;
       });
       const context = `seed ${seed}\n${log.join('\n')}\nexpected ${JSON.stringify(expected)}\nbilled ${JSON.stringify(billed)}\n${recorded.join('\n')}`;
-      expect(close(billed.reduce((a, b) => a + b, 0), total, 0.02 * prints.length), context).toBe(true);
+      expect(close(billed.reduce((a, b) => a + b, 0), total - lost, 0.02 * prints.length), `${context}\nlost to timeouts ${lost}`).toBe(true);
+      expect(uncertain.length, context).toBeLessThanOrEqual(timeouts);
       // Per spool, wherever the print's split is certain.
-      if (expected.every(e => e.perSlot)) {
+      if (timeouts === 0 && expected.every(e => e.perSlot)) {
         for (const n of [0, 1, 2, 3, 4]) {
           const want = expected.reduce((a, e) => a + (e.perSlot![n] ?? 0), 0);
           expect(close(billed[n], want, 0.02 * prints.length), `${context}\nslot ${n}: want ${want}`).toBe(true);
@@ -340,10 +366,11 @@ describe('Bambu histories', () => {
       }
       const rows = await prisma.printSession.findMany({ include: { deductions: true } });
       expect(rows.every(row => row.settled), context).toBe(true);
-      expect(await prisma.usageDeduction.count({ where: { status: { not: 'done' } } }), context).toBe(0);
+      expect(await prisma.usageDeduction.count({ where: { status: { notIn: ['done', 'uncertain'] } } }), context).toBe(0);
       // A print with no problem raises no flag beyond a resume's own note.
       const flagged = rows.filter(row => row.attention && !/resumed the job/.test(row.attention)
-        && !(unweighed.has(row.name ?? '') && /never reported/.test(row.attention)));
+        && !(unweighed.has(row.name ?? '') && /never reported/.test(row.attention))
+        && !(timeouts > 0 && /did not confirm/.test(row.attention)));
       expect(flagged.map(row => row.attention), context).toEqual([]);
     }, 60_000);
   }

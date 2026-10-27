@@ -80,10 +80,14 @@ export class FakeHA {
 export class FakeSpoolman {
   spools: Spool[] = [];
   calls: Array<{ spoolId: number; grams: number }> = [];
+  /** Writes `failNextWrite` stopped before they were applied. */
+  dropped: Array<{ spoolId: number; grams: number }> = [];
   /** Throw this instead of answering, while set. */
   failWith: unknown = null;
   /** Throw this from the next write only. */
   failNextWrite: unknown = null;
+  /** Apply the next write, then throw this (the answer was lost on the way back). */
+  loseNextAnswer: unknown = null;
 
   add(id: number, trayKey: string | null, filament: Partial<Spool['filament']> = {}): Spool {
     const spool = {
@@ -115,12 +119,18 @@ export class FakeSpoolman {
     if (this.failNextWrite) {
       const err = this.failNextWrite;
       this.failNextWrite = null;
+      this.dropped.push({ spoolId, grams });
       throw err;
     }
     const spool = this.spools.find(s => s.id === spoolId)!;
     spool.used_weight = Math.max(0, spool.used_weight + grams);
     spool.remaining_weight = spool.initial_weight - spool.used_weight;
     this.calls.push({ spoolId, grams });
+    if (this.loseNextAnswer) {
+      const err = this.loseNextAnswer;
+      this.loseNextAnswer = null;
+      throw err;
+    }
     return structuredClone(spool);
   }
 

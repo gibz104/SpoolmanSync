@@ -385,6 +385,15 @@ describe('Bambu', () => {
     expect(await attention()).toContain('AMS 1 Tray 2 has no spool assigned');
   });
 
+  it('bills a spool assigned to its tray just before the print ends', async () => {
+    spoolman.assign(1, null);
+    await bambuPrint(ha, flush, {
+      name: 'late-assign', plate: 40, tray: 1, during: pct => { if (pct === 100) spoolman.assign(1, X1.key(1)); },
+    });
+    expect(spoolman.used(1)).toBe(40);
+    expect(await attention()).toBe('');
+  });
+
   it('holds what it owes while Spoolman is down and pays it when it is back', async () => {
     await bambuPrint(ha, flush, {
       name: 'benchy', plate: 100, tray: 1, during: pct => {
