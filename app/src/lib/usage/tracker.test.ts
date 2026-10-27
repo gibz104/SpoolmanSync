@@ -91,6 +91,19 @@ describe('Bambu', () => {
     expect(spoolman.used(2)).toBe(40);
   });
 
+  it('gives the external spool the part of a finished plate the slicer\'s split leaves out', async () => {
+    // It fed between two progress readings, so it was never seen active.
+    await bambuPrint(ha, flush, { name: 'tiny-ext', plate: 80, tray: 1, trays: { 'AMS 1 Tray 1': 79.2 } });
+    expect(spoolman.used(1)).toBe(79.2);
+    expect(spoolman.used(9)).toBe(0.8);
+  });
+
+  it('charges no external spool for the slicer\'s rounding on an AMS-only print', async () => {
+    await bambuPrint(ha, flush, { name: 'rounded', plate: 80, tray: 1, trays: { 'AMS 1 Tray 1': 79.95 } });
+    expect(spoolman.used(1)).toBe(79.95);
+    expect(spoolman.used(9)).toBe(0);
+  });
+
   it('bills a failed print for the part it printed, to the tray that fed it', async () => {
     await bambuPrint(ha, flush, { name: 'benchy', plate: 80, tray: 3, endAt: 50, outcome: 'failed' });
     expect(spoolman.used(3)).toBe(40);
@@ -221,6 +234,101 @@ describe('Bambu', () => {
     ha.tick(1000); await flush();
     expect(spoolman.used(1)).toBe(100);
     expect(await sessions()).toHaveLength(1);
+  });
+
+  it('bills a print SpoolmanSync went down for just after it started running, and which ended meanwhile', async () => {
+    ha.set(X1.status, 'prepare');
+    ha.set(X1.name, 'quick');
+    ha.set(X1.file, 'quick.gcode.3mf');
+    ha.attr(X1.tray(1), { active: true });
+    ha.tick(31_000); await flush();
+    ha.set(X1.progress, 0);
+    ha.set(X1.status, 'running');
+    ha.tick(5_000); await flush();
+    tracker.stop(); // within the 30s the state is otherwise only saved every
+    for (let pct = 1; pct <= 100; pct++) ha.set(X1.progress, pct);
+    ha.set(X1.weight, 30, { 'AMS 1 Tray 1': 30 });
+    ha.set(X1.status, 'finish');
+    ha.tick(60_000);
+    await boot();
+    await tracker.heartbeat();
+    expect(spoolman.used(1)).toBe(30);
+  });
+
+  it('keeps one print when Home Assistant restarts before a printer-started print\'s name arrives', async () => {
+    await bambuPrint(ha, flush, { name: 'first', plate: 50, tray: 1 });
+    ha.set(X1.status, 'prepare'); // names still the last print's
+    ha.tick(30_000); await flush();
+    ha.set(X1.progress, 0);
+    ha.set(X1.status, 'running');
+    ha.attr(X1.tray(2), { active: true });
+    ha.tick(5_000); await flush();
+    ha.set(X1.weight, 40, { 'AMS 1 Tray 2': 40 });
+    for (let pct = 1; pct <= 30; pct++) { ha.set(X1.progress, pct); ha.tick(30_000); await flush(); }
+    // Home Assistant restarts, and comes back with the print's own name.
+    for (const id of [X1.status, X1.progress, X1.weight, X1.name, X1.file]) ha.set(id, 'unavailable', {});
+    ha.tick(30_000); await flush();
+    ha.restart();
+    ha.set(X1.status, 'running');
+    ha.set(X1.progress, 30);
+    ha.set(X1.name, 'second');
+    ha.set(X1.file, 'second.gcode.3mf');
+    ha.set(X1.weight, 40, { 'AMS 1 Tray 2': 40 });
+    ha.tick(5_000); await flush();
+    for (let pct = 31; pct <= 100; pct++) { ha.set(X1.progress, pct); ha.tick(30_000); await flush(); }
+    ha.set(X1.status, 'finish');
+    ha.tick(1000); await flush();
+    expect(spoolman.used(2)).toBe(40);
+    expect((await sessions()).map(s => s.outcome)).toEqual(['finished', 'finished']);
+  });
+
+  it('closes a reprint it did not see end once the next print of the same job is preparing', async () => {
+    await bambuPrint(ha, flush, { name: 'cube', plate: 30, tray: 1 });
+    await bambuPrint(ha, flush, {
+      name: 'cube', plate: 30, tray: 1, during: pct => {
+        if (pct === 50) tracker.stop();
+        return pct === 50;
+      },
+    });
+    for (let pct = 51; pct <= 100; pct++) ha.set(X1.progress, pct);
+    ha.set(X1.status, 'finish');
+    ha.tick(60_000);
+    ha.set(X1.status, 'prepare');
+    ha.tick(30_000);
+    await boot();
+    await tracker.heartbeat(); // the first look, as connecting gives
+    ha.set(X1.progress, 0);
+    ha.set(X1.status, 'running');
+    for (let pct = 1; pct <= 100; pct++) { ha.set(X1.progress, pct); ha.tick(30_000); await flush(); }
+    ha.set(X1.status, 'finish');
+    ha.tick(1000); await flush();
+    expect(spoolman.used(1)).toBe(90);
+    expect((await sessions()).map(s => s.outcome)).toEqual(['finished', 'interrupted', 'finished']);
+  });
+
+  it('closes a reprint it did not see end when it comes back to the next one already running', async () => {
+    await bambuPrint(ha, flush, {
+      name: 'cube', plate: 30, tray: 1, during: pct => {
+        if (pct === 50) tracker.stop();
+        return pct === 50;
+      },
+    });
+    for (let pct = 51; pct <= 100; pct++) ha.set(X1.progress, pct);
+    ha.set(X1.status, 'finish');
+    ha.tick(60_000);
+    ha.set(X1.status, 'prepare');
+    ha.tick(4 * 60_000);
+    ha.set(X1.progress, 0);
+    ha.set(X1.status, 'running');
+    for (let pct = 1; pct <= 10; pct++) { ha.set(X1.progress, pct); ha.tick(30_000); }
+    await boot();
+    await tracker.heartbeat();
+    for (let pct = 11; pct <= 100; pct++) { ha.set(X1.progress, pct); ha.tick(30_000); await flush(); }
+    ha.set(X1.status, 'finish');
+    ha.tick(1000); await flush();
+    expect((await sessions()).map(s => s.outcome)).toEqual(['interrupted', 'finished']);
+    // What it missed between 50% and the end of the first is the outage's cost.
+    expect(spoolman.used(1)).toBe(15 + 30);
   });
 
   it('closes a print it did not see end, and bills the one that followed', async () => {
@@ -368,6 +476,34 @@ describe('Bambu', () => {
     expect(await attention()).toContain('never reported this print\'s weight');
   });
 
+  it('does not take the previous plate re-rendered when the external spool hands over to the AMS', async () => {
+    await bambuPrint(ha, flush, { name: 'ams-print', plate: 100, tray: 1 });
+    // Starts on the external spool and moves to an AMS tray before (and without)
+    // its own 3mf being parsed: ha-bambulab re-renders the last plate both times.
+    ha.set(X1.status, 'prepare');
+    ha.set(X1.name, 'mixed');
+    ha.set(X1.file, 'mixed.gcode.3mf');
+    ha.tick(5_000); await flush();
+    ha.attr(X1.ext, { active: true });
+    ha.set(X1.weight, 100, { 'External Spool': 100 });
+    ha.set(X1.progress, 0);
+    ha.set(X1.status, 'running');
+    ha.tick(5_000); await flush();
+    for (let pct = 1; pct <= 60; pct++) {
+      if (pct === 20) {
+        ha.attr(X1.ext, { active: false });
+        ha.attr(X1.tray(2), { active: true });
+        ha.set(X1.weight, 100, { 'AMS 1 Tray 1': 100 });
+      }
+      ha.set(X1.progress, pct); ha.tick(30_000); await flush();
+    }
+    ha.set(X1.status, 'failed');
+    ha.tick(1000); await flush();
+    expect(spoolman.used(2)).toBe(0);
+    expect(spoolman.used(9)).toBe(0);
+    expect(await attention()).toContain('never reported this print\'s weight');
+  });
+
   it('bills a failed print by its own progress when the last one\'s is still showing', async () => {
     await bambuPrint(ha, flush, { name: 'first', plate: 50, tray: 1, endAt: 79, outcome: 'failed' });
     await bambuPrint(ha, flush, { name: 'second', plate: 100, tray: 2, runningBeforeReset: true, endAt: 30, outcome: 'failed' });
@@ -466,6 +602,16 @@ describe('Bambu edge cases', () => {
     ha.tick(1000); await flush();
     // Picks up where the last print stopped: the 59% shown while idle is not this print's reading.
     expect(spoolman.used(1)).toBe(61);
+  });
+
+  it('bills nothing more for a resumed job that had nothing left to print', async () => {
+    await bambuPrint(ha, flush, { name: 'tall', plate: 100, tray: 1, endAt: 100, outcome: 'failed' });
+    await powerCycle(100);
+    ha.set(X1.status, 'running');
+    ha.tick(5_000); await flush();
+    ha.set(X1.status, 'finish');
+    ha.tick(1_000); await flush();
+    expect(spoolman.used(1)).toBe(100);
   });
 
   it('bills the whole plate when a failed job is started again from scratch', async () => {
@@ -769,6 +915,66 @@ describe('Creality edge cases', () => {
       });
     }
   }
+
+  it('does not keep a stray frame repeating the last job\'s figure when the job ends below it', async () => {
+    const frame = async (mm: number, status = 'printing', progress = 50) => {
+      crealityFrame(ha, status, mm, 'next.gcode', { progress });
+      ha.tick(30_000); await flush();
+    };
+    await frame(20_000, 'printing', 0);
+    for (let mm = 0; mm <= 19_500; mm += 750) await frame(mm);
+    crealityFrame(ha, 'printing', 20_000, 'next.gcode', { progress: 99 }); // the last job's figure
+    ha.tick(2_000); await flush();
+    await frame(19_800, 'printing', 99);
+    await frame(19_800, 'completed', 100);
+    expect(spoolman.used(21)).toBeCloseTo(grams(19_800), 3);
+  });
+
+  it('bills a reprint that ends at exactly the last job\'s length', async () => {
+    await crealityPrint(ha, flush, { file: 'same.gcode', slot: 1, steps: 8, cmPerStep: 50, startMm: 20_000 });
+    crealityFrame(ha, 'printing', 4_000, 'same.gcode', { progress: 0 });
+    ha.tick(1_000); await flush();
+    crealityFrame(ha, 'printing', 0, 'same.gcode', { progress: 0 });
+    ha.tick(30_000); await flush();
+    for (let i = 1; i <= 8; i++) {
+      crealityFrame(ha, i === 8 ? 'completed' : 'printing', i * 500, 'same.gcode', { progress: i * 12.5 });
+      ha.tick(30_000); await flush();
+    }
+    expect(spoolman.used(21)).toBeCloseTo(grams(2 * 4_000), 3);
+  });
+
+  it('recovers when glitched frames leave the counter below where the job is', async () => {
+    await crealityPrint(ha, flush, {
+      file: 'g.gcode', slot: 1, steps: 10, cmPerStep: 50,
+      during: async i => {
+        if (i !== 5) return;
+        for (const mm of [0, 150]) { crealityFrame(ha, 'printing', mm, 'g.gcode'); ha.tick(2_000); await flush(); }
+      },
+    });
+    // The 15cm the glitch read as a restart is the most it can cost.
+    expect(spoolman.used(21)).toBeGreaterThanOrEqual(grams(10 * 500) - 1e-6);
+    expect(spoolman.used(21)).toBeLessThanOrEqual(grams(10 * 500 + 150) + 1e-6);
+  });
+
+  it('counts a job in full when its first frame shows the last job\'s figure lower than recorded', async () => {
+    await crealityPrint(ha, flush, { file: 'a.gcode', slot: 1, steps: 4, cmPerStep: 50, startMm: 20_000 });
+    // The last job really ended at 1950mm, not the 2000mm on record.
+    await crealityPrint(ha, flush, { file: 'b.gcode', slot: 2, steps: 6, cmPerStep: 50, startMm: 1_950 });
+    expect(spoolman.used(22)).toBeCloseTo(grams(6 * 500), 3);
+  });
+
+  it('bills a resume whose restarted count starts above half of where it stopped', async () => {
+    const frame = async (status: string, mm: number, progress: number, ms = 30_000) => {
+      crealityFrame(ha, status, mm, 'r.gcode', { progress });
+      ha.tick(ms); await flush();
+    };
+    await frame('printing', 20_000, 0, 1_000);
+    for (const mm of [0, 600, 1_200, 1_500]) await frame('printing', mm, 20);
+    await frame('off', 1_500, 20, 10 * 60_000);
+    for (const mm of [1_000, 1_400, 1_800, 2_200]) await frame('printing', mm, 60);
+    await frame('completed', 2_200, 100, 1_000);
+    expect(spoolman.used(21)).toBeCloseTo(grams(1_500 + 2_200), 3);
+  });
 
   it('keeps counting through paused, processing and powered-off frames', async () => {
     await crealityPrint(ha, flush, {

@@ -12,6 +12,8 @@ export interface TrayWatch {
   /** Null for the slot discovery synthesizes for a printer with none of its own (#68). */
   entityId: string | null;
   label: string;
+  /** An external spool: Bambu's slicer split never names one. */
+  external: boolean;
 }
 
 export interface PrinterWatch {
@@ -52,14 +54,14 @@ export function watchFor(printer: HAPrinter): PrinterWatch | null {
   for (const ams of printer.ams_units) {
     for (const tray of ams.trays) {
       const key = tray.unique_id || tray.entity_id;
-      trays.push({ key, entityId: tray.entity_id, label: `${ams.name} ${printer.brand === 'creality' ? 'Slot' : 'Tray'} ${tray.tray_number}` });
+      trays.push({ key, entityId: tray.entity_id, label: `${ams.name} ${printer.brand === 'creality' ? 'Slot' : 'Tray'} ${tray.tray_number}`, external: false });
       name(ams.ams_number >= 128 ? `AMS HT ${ams.ams_number - 127}` : `AMS ${ams.ams_number} Tray ${tray.tray_number}`, key);
     }
   }
   for (const ext of printer.external_spools) {
     const key = ext.unique_id || ext.entity_id;
     const synthetic = !ext.entity_id.includes('.');
-    trays.push({ key, entityId: synthetic ? null : ext.entity_id, label: ext.slot_name || 'External' });
+    trays.push({ key, entityId: synthetic ? null : ext.entity_id, label: ext.slot_name || 'External', external: true });
     const index = Number((key.match(/_ExternalSpool(\d+)/i) ?? [])[1] ?? 1);
     name(index > 1 ? `External Spool ${index}` : 'External Spool', key);
   }

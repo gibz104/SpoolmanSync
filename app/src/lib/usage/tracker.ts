@@ -19,7 +19,7 @@ import { processGlobal } from '@/lib/process-global';
 import { isValidTrayUuid } from '@/lib/webhook-helpers';
 import { EntitySubscription, type EntityMap } from './entities';
 import { watchFor, watchedEntities, type PrinterWatch } from './printers';
-import { ABANDON_AFTER_MS, advance, type Ended, type Outcome, type PreviousPrint, type SessionState } from './session';
+import { ABANDON_AFTER_MS, advance, plateMark, type Ended, type Outcome, type PreviousPrint, type SessionState } from './session';
 import { markInterruptedWrites, settle, type SettleResult } from './ledger';
 import { removeLegacyEntities } from './legacy-cleanup';
 
@@ -59,7 +59,17 @@ interface Open {
   state: SessionState;
   saved: string;
   savedAt: number;
+  /** `milestones` of the saved state. */
+  savedMilestones: string;
 }
+
+/**
+ * What a restart must not lose, saved as soon as it changes. Usage and progress
+ * are re-read from Home Assistant after a restart, but not that the print
+ * reached RUNNING before an outage it ended during.
+ */
+const milestones = (s: SessionState) =>
+  JSON.stringify([s.runningSince, s.plate, s.job, s.resumedFrom, s.restarted, s.lastJob, s.outage, s.dip, s.jump, s.skipped]);
 
 export interface TrackerStatus {
   connected: boolean;
@@ -101,7 +111,8 @@ export class UsageTracker {
       await this.addAttention(sessionId, ['SpoolmanSync stopped while writing a deduction for this print; check the spool\'s weight in Spoolman.']);
     }
     for (const row of await prisma.printSession.findMany({ where: { endedAt: null } })) {
-      this.open.set(row.printer, { id: row.id, state: JSON.parse(row.state), saved: row.state, savedAt: this.deps.now() });
+      const state: SessionState = JSON.parse(row.state);
+      this.open.set(row.printer, { id: row.id, state, saved: row.state, savedAt: this.deps.now(), savedMilestones: milestones(state) });
     }
     await this.rediscover();
     this.source.start();
@@ -228,7 +239,7 @@ export class UsageTracker {
           state,
         },
       });
-      open = { id: row.id, state: step.session, saved: state, savedAt: this.deps.now() };
+      open = { id: row.id, state: step.session, saved: state, savedAt: this.deps.now(), savedMilestones: milestones(step.session) };
       this.open.set(prefix, open);
     } else {
       open.state = step.session;
@@ -238,15 +249,17 @@ export class UsageTracker {
     if (outcome?.notes.length) await this.addAttention(open.id, outcome.notes);
   }
 
-  private async save(open: Open, force = false): Promise<void> {
+  private async save(open: Open): Promise<void> {
     const state = JSON.stringify(open.state);
-    if (state === open.saved || (!force && this.deps.now() - open.savedAt < SAVE_EVERY_MS)) return;
+    const marks = milestones(open.state);
+    if (state === open.saved || (marks === open.savedMilestones && this.deps.now() - open.savedAt < SAVE_EVERY_MS)) return;
     await prisma.printSession.update({
       where: { id: open.id },
       data: { state, name: open.state.job.name ?? open.state.job.file },
     });
     open.saved = state;
     open.savedAt = this.deps.now();
+    open.savedMilestones = marks;
   }
 
   private async end(watch: PrinterWatch, id: string, ended: Ended): Promise<void> {
@@ -413,7 +426,10 @@ export class UsageTracker {
 }
 
 function previousPrint(state: SessionState, outcome: Outcome | null, endedAt: number): PreviousPrint {
-  return { job: state.job, outcome, endedAt, progress: state.progress, plateGrams: state.plate?.grams ?? null, counter: state.counter };
+  return {
+    job: state.job, outcome, endedAt, progress: state.progress, counter: state.counter,
+    plateGrams: state.plate?.grams ?? null, plate: state.plate ? plateMark(state.plate.grams, state.plate.trays) : null,
+  };
 }
 
 async function spoolmanClient(): Promise<SpoolmanClient | null> {

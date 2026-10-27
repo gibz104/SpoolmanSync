@@ -43,6 +43,8 @@ export interface Plate {
 export interface SessionState {
   /** HA time the print started (ms). */
   startedAt: number;
+  /** The tracker saw the print start, as opposed to finding it already under way. */
+  sawStart?: boolean;
   job: Job;
   /** HA last_changed of the status as last observed. */
   statusAt: number;
@@ -55,13 +57,23 @@ export interface SessionState {
   /** Bambu: objects skipped during this print. */
   skipped?: number;
   plate: Plate | null;
+  /** Bambu: `plateMark` of the plate weight shown when the print began, the last print's until this one's 3mf is parsed. */
+  shownAtStart?: string | null;
   /** Creality: the counter reading (cm) usage has been counted up to, and its HA time. */
   counter: number | null;
   counterAt: number | null;
   /** Creality: the counter has restarted for this job (until then it shows the previous job's figure). */
   restarted: boolean;
-  /** Creality: a later reading below the counter, and when the counter was last above it; see the dip handling. */
-  dip?: { from: number; since: number } | null;
+  /** Creality: the last job's figure, which the counter showed until it restarted for this job. */
+  lastJob?: number | null;
+  /** Creality: the printer went away (off or unreachable) since the counter was last read; only then can it restart. */
+  outage?: boolean;
+  /** Creality: a reading below the counter after an outage, its time, and when the counter was last above it; see the dip handling. */
+  dip?: { from: number; at: number; since: number } | null;
+  /** Creality: a reading too far above the counter to be filament, and its time; see the jump handling. */
+  jump?: { to: number; at: number } | null;
+  /** Creality: a reading equal to the last job's figure, counted once another reading or the job's end confirms it. */
+  held?: number | null;
   /** Filament used per tray key, in grams (Bambu) or cm (Creality). */
   used: Record<string, number>;
   lastTray: string | null;
@@ -80,6 +92,8 @@ export interface PreviousPrint {
   /** Bambu: how far it got (%). */
   progress: number;
   plateGrams: number | null;
+  /** Bambu: `plateMark` of its plate. */
+  plate: string | null;
   counter: number | null;
 }
 
@@ -112,14 +126,20 @@ const MAX_CM_PER_S = 5;
 const MIN_WINDOW_S = 30;
 /** How near, in %, a job must pick up to where its unfinished last print stopped to be that print resumed. */
 const RESUME_SLACK_PCT = 5;
+/** A print first seen this long after it started was found under way, not seen starting. */
+const LATE_MS = 5 * 60_000;
+/** A running print whose progress is this far (%) behind where it got has started over. */
+const RESTARTED_DROP_PCT = 10;
 /** Below this, picking up "where it stopped" cannot be told from starting over. */
 const RESUME_MIN_PCT = 5;
-/** A dip below the counter that climbs this far (cm) is the job counting again from zero, not a glitch. */
+/** A dip below the counter after an outage that climbs this far (cm) is the job counting again from zero. */
 const RESTART_CONFIRM_CM = 10;
 /** ha_creality_ws reads a job completed a second early, then printing again at 99%, for about this long at most. */
 const COMPLETED_ECHO_MS = 2 * 60_000;
 
 const BAMBU_ACTIVE = new Set(['prepare', 'running', 'pause', 'slicing', 'init']);
+/** Where a Bambu print begins; a print that was running never returns to these. */
+const BAMBU_STARTING = new Set(['prepare', 'slicing']);
 const BAMBU_END: Record<string, Outcome> = { finish: 'finished', failed: 'failed', idle: 'ended' };
 const CREALITY_END: Record<string, Outcome> = { completed: 'finished', stopped: 'cancelled' };
 const NO_STATUS = new Set(['unavailable', 'unknown', 'offline', 'off', '']);
@@ -134,7 +154,7 @@ const otherJob = (a: Job, b: Job) =>
 
 function newSession(startedAt: number, job: Job, now: number): SessionState {
   return {
-    startedAt, job, statusAt: startedAt, runningSince: null, progress: 0, plate: null,
+    startedAt, sawStart: now - startedAt < LATE_MS, job, statusAt: startedAt, runningSince: null, progress: 0, plate: null,
     counter: null, counterAt: null, restarted: false, used: {}, lastTray: null, idleSince: null, seenAt: now,
   };
 }
@@ -180,26 +200,42 @@ function slicerTrays(watch: PrinterWatch, attributes: Record<string, unknown>): 
  * Where this print picks up, if it resumes the same job after the printer
  * reported it ended unfinished: Bambu's power-loss recovery can resume a job
  * already reported failed or idle, and the progress before that was billed to
- * the print that stopped there.
+ * the print that stopped there. Starting the job over shows progress near 0
+ * first; a resume first shows about where it stopped, or later if the printer
+ * dropped off before its first update. Later only counts for a print the
+ * tracker saw start, since one found under way can show any progress.
  */
 function resumePoint(s: SessionState, prev: PreviousPrint | null, pct: number): number {
   if (!prev || prev.outcome === 'finished' || !sameJob(s.job, prev.job)) return 0;
-  if (pct < RESUME_MIN_PCT || prev.progress < RESUME_MIN_PCT || Math.abs(pct - prev.progress) > RESUME_SLACK_PCT) return 0;
+  if (pct < RESUME_MIN_PCT || prev.progress < RESUME_MIN_PCT || pct < prev.progress - RESUME_SLACK_PCT) return 0;
+  if (!s.sawStart && pct > prev.progress + RESUME_SLACK_PCT) return 0;
   return Math.min(pct, prev.progress);
 }
 
 const NEVER_REPORTED = 'The printer never reported this print\'s weight (Home Assistant shows no change when it matches the last print\'s), so nothing was deducted.';
+
+/** A plate's weight and split, to tell one re-rendered from one newly parsed. */
+export const plateMark = (grams: number, trays: Record<string, number> | null) =>
+  JSON.stringify([grams, trays && Object.entries(trays).sort(([a], [b]) => a.localeCompare(b))]);
+
+function shownPlate(watch: PrinterWatch, weight: EntityState | undefined): string | null {
+  const grams = weight ? Number(weight.state) : NaN;
+  return weight && grams > 0 ? plateMark(grams, slicerTrays(watch, weight.attributes)) : null;
+}
 
 /** The plate weight for this print, if the printer has said what it is. */
 function bambuPlate(watch: PrinterWatch, weight: EntityState | undefined, s: SessionState, prev: PreviousPrint | null): Plate | null {
   const grams = weight ? Number(weight.state) : NaN;
   if (!weight || !(grams > 0)) return null;
   const trays = slicerTrays(watch, weight.attributes);
-  // An attribute-only write counts only when it names AMS trays: ha-bambulab also
-  // rewrites the attributes, value unchanged, whenever the external spool's
-  // active flag flips.
+  // An attribute-only write counts only when it names AMS trays and is not a
+  // plate already seen: ha-bambulab re-renders the attributes, value unchanged,
+  // whenever the external spool's active flag flips, the last print's split
+  // included until this print's 3mf is parsed.
+  const mark = plateMark(grams, trays);
   const written = weight.lastChanged >= s.startedAt
-    || (weight.lastUpdated >= s.startedAt && Object.keys(weight.attributes).some(k => k.startsWith('AMS ')));
+    || (weight.lastUpdated >= s.startedAt && mark !== s.shownAtStart && mark !== prev?.plate
+      && Object.keys(weight.attributes).some(k => k.startsWith('AMS ')));
   if (written) return { grams, trays, fresh: true };
   if (prev && sameJob(s.job, prev.job) && prev.plateGrams === grams) return { grams, trays, fresh: false };
   return null;
@@ -209,7 +245,7 @@ const end = (state: SessionState, outcome: Outcome, used: Record<string, number>
   ({ state, outcome, used, attention });
 
 /** Bambu's final amounts: the slicer's per-tray figures for a finished print, else what was observed. */
-function bambuEnd(s: SessionState, outcome: Outcome): Ended {
+function bambuEnd(watch: PrinterWatch, s: SessionState, outcome: Outcome): Ended {
   if (s.runningSince === null) return end(s, outcome, s.used);
   const from = s.resumedFrom ?? 0;
   const notes = [
@@ -224,12 +260,24 @@ function bambuEnd(s: SessionState, outcome: Outcome): Ended {
   if (outcome !== 'finished') return done(s.used);
 
   const { grams, trays } = s.plate;
-  // The slicer's split is only right if it covers the plate and every tray that
-  // actually fed (an AMS that switched to a backup spool fed a tray it never
-  // planned), and only for a whole job.
-  if (from === 0 && trays && Math.abs(total(trays) - grams) <= Math.max(0.5, grams * 0.02)
-    && Object.entries(s.used).every(([key, g]) => g < 1 || key in trays)) {
-    return done(trays);
+  // The slicer's split, for a whole job, unless a tray it never planned fed (an
+  // AMS that switched to a backup spool). ha-bambulab leaves the external spool
+  // out of the split, so the rest of the plate is what that fed -- and while one
+  // is active it shows the whole plate under it, which is no split at all.
+  const externals = watch.trays.filter(t => t.external).map(t => t.key);
+  const rounding = Math.max(0.5, grams * 0.02);
+  if (from === 0 && trays && total(trays) <= grams + rounding) {
+    const externalOnly = Object.keys(trays).every(key => externals.includes(key));
+    const outside = Object.entries(s.used).filter(([key, g]) => !(key in trays) && g > 0);
+    const unplanned = outside.some(([key, g]) => g >= 1 && (externalOnly || !externals.includes(key)));
+    const rest = Math.max(0, grams - total(trays));
+    // An external spool that fed too briefly to be seen is the only one there is.
+    const seen = outside.filter(([key]) => externals.includes(key));
+    const takers = seen.length > 0 || externals.length !== 1 || rest <= rounding / 4 ? seen : [[externals[0], 1] as [string, number]];
+    if (!unplanned && (takers.length > 0 || rest <= rounding)) {
+      const weight = total(Object.fromEntries(takers));
+      return done({ ...trays, ...Object.fromEntries(takers.map(([key, g]) => [key, rest * g / weight])) });
+    }
   }
   const owed = grams * (100 - from) / 100;
   const observed = total(s.used);
@@ -243,17 +291,30 @@ function advanceBambu(watch: PrinterWatch, map: EntityMap, cur: SessionState | n
   const status = statusEntity?.state ?? 'unavailable';
   const job: Job = { name: textState(map, watch.jobName), file: textState(map, watch.gcodeFile) };
   const progressEntity = watch.progress ? map.get(watch.progress) : undefined;
+  const progress = Number(progressEntity?.state);
 
   let s = cur ? structuredClone(cur) : null;
   let ended: Ended | null = null;
   let started = false;
 
-  // A running print, then a different job with the status changed since it was
-  // last seen: a print ended and another began while the tracker was not
-  // watching. Anything less is this print's own name arriving late, which
-  // ha-bambulab writes after the status and can leave until after RUNNING.
-  if (s && statusEntity && BAMBU_ACTIVE.has(status) && s.runningSince !== null
-    && statusEntity.lastChanged !== s.statusAt && otherJob(s.job, job)) {
+  // A print ended and another began while the tracker was not watching: the
+  // running print is back at its start, its progress started over, or a
+  // different job's names came before the status's latest change. A print's
+  // own names arriving late come after it (ha-bambulab writes them after the
+  // status, and can leave them until after RUNNING), or with it when Home
+  // Assistant restarts.
+  const namesAt = Math.max(map.get(watch.jobName ?? '')?.lastChanged ?? 0, map.get(watch.gcodeFile ?? '')?.lastChanged ?? 0);
+  if (s && statusEntity && BAMBU_ACTIVE.has(status) && s.runningSince !== null && statusEntity.lastChanged !== s.statusAt
+    && (BAMBU_STARTING.has(status)
+      || (progressEntity !== undefined && progressEntity.lastUpdated >= s.runningSince && progress < s.progress - RESTARTED_DROP_PCT)
+      || (otherJob(s.job, job) && statusEntity.lastChanged > namesAt))) {
+    // A new print still starting has not moved the progress: what it shows is
+    // how far the one it replaced got.
+    if (BAMBU_STARTING.has(status) && s.plate && progressEntity && progressEntity.lastUpdated >= s.runningSince && Number.isFinite(progress)) {
+      s.progress = Math.max(s.progress, Math.min(100, progress));
+      const due = s.plate.grams * (s.progress - (s.resumedFrom ?? 0)) / 100 - total(s.used);
+      if (due > 0.0005) allocate(s, due, watch, map);
+    }
     ended = end(s, 'interrupted', s.used);
     s = null;
   }
@@ -261,6 +322,7 @@ function advanceBambu(watch: PrinterWatch, map: EntityMap, cur: SessionState | n
   if (!s) {
     if (!statusEntity || !BAMBU_ACTIVE.has(status)) return { session: null, started: false, ended };
     s = newSession(statusEntity.lastChanged, job, now);
+    s.shownAtStart = shownPlate(watch, watch.weight ? map.get(watch.weight) : undefined);
     started = true;
   }
 
@@ -279,10 +341,12 @@ function advanceBambu(watch: PrinterWatch, map: EntityMap, cur: SessionState | n
   }
   s.plate = plate;
 
-  const progress = Number(progressEntity?.state);
   if (s.runningSince !== null && progressEntity && progressEntity.lastUpdated >= s.runningSince && Number.isFinite(progress)) {
     const pct = Math.min(100, Math.max(0, progress));
-    s.resumedFrom ??= s.progress === 0 && total(s.used) === 0 ? resumePoint(s, prev, pct) : 0;
+    // Decided by the first reading clear of zero: a lone 0 can be a glitch.
+    if (s.resumedFrom === undefined && pct >= RESUME_MIN_PCT) {
+      s.resumedFrom = s.progress === 0 && total(s.used) === 0 ? resumePoint(s, prev, pct) : 0;
+    }
     s.progress = Math.max(s.progress, pct);
   }
   if (s.runningSince !== null && s.plate) {
@@ -296,7 +360,11 @@ function advanceBambu(watch: PrinterWatch, map: EntityMap, cur: SessionState | n
   }
 
   const outcome = BAMBU_END[status];
-  if (outcome) return { session: null, started, ended: bambuEnd(s, outcome) };
+  if (outcome && s.resumedFrom === undefined && s.runningSince !== null && Number.isFinite(progress)) {
+    // Ended without a reading of its own: a job resumed with nothing left to print.
+    s.resumedFrom = s.progress === 0 && total(s.used) === 0 ? resumePoint(s, prev, progress) : 0;
+  }
+  if (outcome) return { session: null, started, ended: bambuEnd(watch, s, outcome) };
   if (now - s.seenAt > ABANDON_AFTER_MS) return { session: null, started, ended: end(s, 'abandoned', s.used) };
   return { session: s, started, ended };
 }
@@ -311,6 +379,57 @@ function crealityCounter(watch: PrinterWatch, map: EntityMap, status: EntityStat
   // Older ha_creality_ws: the separate sensor, which reads 0 whenever the printer is unreachable.
   const cm = Number(textState(map, watch.usedLength));
   return Number.isFinite(cm) && cm >= 0 ? cm : null;
+}
+
+/**
+ * Fold one reading of the job's extruded-length counter (cm) into the print.
+ * Only increases count, and a misleading reading costs at most the frame it hides:
+ *  - until the counter restarts for the job it shows the last job's figure,
+ *    and a drop to what could have been used since the job began is the restart;
+ *  - now and then a frame repeats the last job's figure, so a reading equal to
+ *    it waits for one more (or the job's end) to confirm it;
+ *  - zeroed and glitched readings dip below the counter, and usage resumes above it,
+ *    except that after the printer went away a resumed job can count from zero
+ *    again: a dip that then climbs;
+ *  - a reading too far above the counter to be filament is skipped, unless the
+ *    next one confirms the counter really is there (it had been left too low).
+ */
+function countReading(s: SessionState, reading: number, at: number, lastJob: number | null | undefined, ending: boolean, feed: (cm: number) => void): void {
+  const plausible = (cm: number, since = s.counterAt ?? s.startedAt) =>
+    cm <= MAX_CM_PER_S * Math.max(MIN_WINDOW_S, (at - since) / 1000);
+  const moveTo = (value: number, used: number) => {
+    if (used > 0) feed(used);
+    Object.assign(s, { counter: value, dip: null, jump: null, held: null, outage: false });
+  };
+  if (s.counter === null) {
+    s.counter = reading;
+    s.restarted = reading < 1; // a counter at zero has already restarted for this job
+  }
+  const counter = s.counter;
+  if (reading > counter) {
+    if (s.restarted && reading === (s.lastJob ?? lastJob) && s.held !== reading && !ending) s.held = reading;
+    else if (s.dip && reading - s.dip.from >= RESTART_CONFIRM_CM && plausible(reading - s.dip.from, s.dip.at)) {
+      moveTo(reading, plausible(reading, s.dip.since) ? reading : 0); // the restarted count passing where it was
+    } else if (plausible(reading - counter)) moveTo(reading, reading - counter);
+    else if (s.jump && reading >= s.jump.to && plausible(reading - s.jump.to, s.jump.at)) moveTo(reading, reading - s.jump.to);
+    else s.jump = { to: reading, at };
+  } else if (reading < counter && !s.restarted) {
+    if (plausible(reading)) {
+      s.restarted = true;
+      s.lastJob = counter;
+      feed(reading);
+    } else {
+      s.lastJob = reading; // still the last job's figure, only lower than the one on record
+    }
+    s.counter = reading;
+  } else if (reading < counter) {
+    if (!s.dip || reading < s.dip.from) {
+      if (s.outage) s.dip = { from: reading, at, since: s.dip?.since ?? s.counterAt ?? s.startedAt };
+    } else if (reading - s.dip.from >= RESTART_CONFIRM_CM) {
+      moveTo(reading, plausible(reading, s.dip.since) ? reading : 0);
+    }
+  }
+  s.counterAt = at;
 }
 
 function advanceCreality(watch: PrinterWatch, map: EntityMap, cur: SessionState | null, prev: PreviousPrint | null, now: number): Advance {
@@ -350,40 +469,11 @@ function advanceCreality(watch: PrinterWatch, map: EntityMap, cur: SessionState 
 
   if (statusEntity) s.statusAt = statusEntity.lastChanged;
   if (!NO_STATUS.has(status)) s.seenAt = now;
+  else if (s.counter !== null) s.outage = true;
   if (job.file !== null) s.job = job;
 
   if (reading !== null) {
-    const at = statusEntity!.lastUpdated;
-    const plausible = (cmUsed: number, since = s!.counterAt ?? s!.startedAt) =>
-      cmUsed <= MAX_CM_PER_S * Math.max(MIN_WINDOW_S, (at - since) / 1000);
-    if (s.counter === null) {
-      s.counter = reading;
-      s.restarted = reading < 1; // a counter at zero has already restarted for this job
-    }
-    if (reading > s.counter) {
-      s.dip = null;
-      // Too fast to be real (a frame repeating the last job's figure, say): skip the reading.
-      if (plausible(reading - s.counter)) {
-        allocate(s, reading - s.counter, watch, map);
-        s.counter = reading;
-      }
-    } else if (reading < s.counter && !s.restarted) {
-      // The job's counter restarting: what it reads now was used since.
-      s.restarted = true;
-      if (plausible(reading)) allocate(s, reading, watch, map);
-      s.counter = reading;
-    } else if (reading < s.counter) {
-      // A later dip is a zeroed or glitched reading, and usage resumes above it,
-      // unless the counter climbs from the dip: the job counting from zero again,
-      // as when it resumes after a power loss.
-      if (!s.dip || reading < s.dip.from) s.dip = { from: reading, since: s.dip?.since ?? s.counterAt ?? s.startedAt };
-      else if (reading - s.dip.from >= RESTART_CONFIRM_CM) {
-        if (plausible(reading, s.dip.since)) allocate(s, reading, watch, map);
-        s.counter = reading;
-        s.dip = null;
-      }
-    }
-    s.counterAt = at;
+    countReading(s, reading, statusEntity!.lastUpdated, prev?.counter, status in CREALITY_END, cm => allocate(s!, cm, watch, map));
   }
 
   const outcome = CREALITY_END[status];
