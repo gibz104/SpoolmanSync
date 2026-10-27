@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { createActivityLog } from '@/lib/activity-log';
+import { reconnectUsageTracker } from '@/lib/usage/tracker';
 import { isNetworkError } from '@/lib/network-error';
 
 /**
@@ -103,6 +104,8 @@ export async function GET(request: NextRequest) {
         expiresAt,
       },
     });
+
+    reconnectUsageTracker();
 
     // Log activity
     await createActivityLog({

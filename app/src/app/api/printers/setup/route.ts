@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import prisma from '@/lib/db';
+import { refreshUsagePrinters } from '@/lib/usage/tracker';
 
 const SUPPORTED_DOMAINS = ['bambu_lab', 'ha_creality_ws'] as const;
 type PrinterDomain = typeof SUPPORTED_DOMAINS[number];
@@ -126,6 +127,8 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: 'flowId required' }, { status: 400 });
         }
         const result = await client.continueConfigFlow(flowId, userInput || {});
+        // A printer added: track its usage now, not at the next rediscovery.
+        if (result.type === 'create_entry') refreshUsagePrinters();
         return NextResponse.json(result);
       }
 
@@ -144,6 +147,7 @@ export async function POST(request: NextRequest) {
         const hidden = await getHiddenPrinters();
         const updated = hidden.filter(h => h.entryId !== entryId);
         await saveHiddenPrinters(updated);
+        refreshUsagePrinters();
         return NextResponse.json({ success: true });
       }
 
@@ -222,6 +226,7 @@ export async function DELETE(request: NextRequest) {
       hidden.push({ entryId, title: entryTitle });
       await saveHiddenPrinters(hidden);
     }
+    refreshUsagePrinters();
 
     return NextResponse.json({ success: true });
   } catch (error) {

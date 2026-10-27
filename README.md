@@ -101,7 +101,7 @@ Alerts fire only when you're on your *last* spool of a group — no noise from p
 
 **Creality filament weight looks wrong** — ha_creality_ws reports filament usage as a length, which SpoolmanSync converts to weight with the density and diameter of the spool's filament in Spoolman. Check those values in Spoolman if a spool's deductions look off.
 
-**A print shows a warning under Recent Prints** — SpoolmanSync deducts nothing it cannot account for, and says why instead: the printer never reported the print's weight (on a Bambu printer, a different print of exactly the same weight as the one before also reads this way, because Home Assistant shows no change), a tray that fed it had no spool assigned, or Spoolman did not confirm a deduction (check that spool's weight). The same notes appear on the Logs page.
+**A print shows a warning under Recent Prints** — SpoolmanSync deducts nothing it cannot account for, and says why instead: the printer never reported the print's weight (on a Bambu printer, a different print of exactly the same weight as the one before also reads this way, because Home Assistant shows no change), a tray that fed it had no spool assigned (or had several), objects were skipped (the plate weight still includes them), or Spoolman did not confirm a deduction (check that spool's weight). A job resumed after a power loss is noted too: it is charged only for the part printed after it resumed. The same notes appear on the Logs page.
 
 ## Links
 

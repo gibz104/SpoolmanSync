@@ -129,6 +129,13 @@ export class UsageTracker {
     this.source.stop();
   }
 
+  /** Connect to Home Assistant again, as the stored connection now says. */
+  reconnect(): void {
+    if (this.stopped) return;
+    this.source.stop();
+    this.source.start();
+  }
+
   status(): TrackerStatus {
     return {
       connected: this.source.connected,
@@ -186,6 +193,7 @@ export class UsageTracker {
 
   /** Re-read the feeding CFS slot of every Creality printer printing now. */
   pollCfs(): void {
+    if (!this.source.connected) return;
     const printing = [...this.open.keys()].map(prefix => this.watches.get(prefix)).filter(w => w?.brand === 'creality');
     if (printing.length > 0) this.refreshCfs(printing as PrinterWatch[]);
   }
@@ -492,7 +500,18 @@ export function usageTracker(): UsageTracker | null {
   return tracker().instance;
 }
 
-/** Pick up printers or trays that were just added, removed or reconfigured. */
+/** The Home Assistant connection was replaced or removed: drop the old one. */
+export function reconnectUsageTracker(): void {
+  tracker().instance?.reconnect();
+}
+
+/**
+ * Pick up printers that were just added, removed or shown again, now and once
+ * more shortly after, for a new printer whose entities HA is still registering.
+ */
 export function refreshUsagePrinters(): void {
-  void tracker().instance?.rediscover();
+  const instance = tracker().instance;
+  if (!instance) return;
+  void instance.rediscover();
+  setTimeout(() => void instance.rediscover(), 30_000).unref?.();
 }

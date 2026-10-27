@@ -37,6 +37,7 @@ Tracked by SpoolmanSync itself over Home Assistant's WebSocket API; no Home Assi
 
 - **Bambu Lab**: ha-bambulab's `print_weight` (the slicer's plate weight, with per-tray grams) times print progress, charged to the tray feeding at the time and settled to the slicer's per-tray figures when a print finishes
 - **Creality**: the extruded length ha_creality_ws reports for the job, converted to weight with the density and diameter Spoolman records for the spool's filament
+- Handles prints resumed after a power loss, AMS backup-spool switching, spools swapped mid-print, prints mixing AMS trays and the external spool, and dual-nozzle printers (H2D, H2C, X2D)
 - Deductions Spoolman cannot take are kept and written once it is reachable; anything that cannot be accounted for is flagged on the print rather than guessed
 
 Matching works by:
