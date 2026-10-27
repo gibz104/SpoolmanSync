@@ -27,7 +27,7 @@ async function boot(): Promise<UsageTracker> {
     discover: async () => printers,
     spoolman: async () => spoolman as unknown as SpoolmanClient,
     refreshCfs: async ids => { cfsRequests.push(ids); },
-    source: onChange => ha.source(onChange),
+    source: (onChange, onStatus) => ha.source(onChange, onStatus),
     now: () => ha.now,
   });
   await tracker.start();
@@ -329,6 +329,38 @@ describe('Bambu', () => {
     expect((await sessions()).map(s => s.outcome)).toEqual(['interrupted', 'finished']);
     // What it missed between 50% and the end of the first is the outage's cost.
     expect(spoolman.used(1)).toBe(15 + 30);
+  });
+
+  it('records a print that ran from start to finish while SpoolmanSync was stopped', async () => {
+    await bambuPrint(ha, flush, { name: 'seen', plate: 20, tray: 1 });
+    tracker.stop();
+    await bambuPrint(ha, async () => {}, { name: 'unseen', plate: 30, tray: 2 });
+    await boot();
+    await tracker.heartbeat();
+    expect(spoolman.used(2)).toBe(0);
+    const missed = (await sessions()).find(s => s.outcome === 'missed');
+    expect(missed).toMatchObject({ name: 'unseen', settled: true });
+    expect(missed!.attention).toContain('finished while SpoolmanSync was not following the printer');
+    // Checked once per connection: later passes add nothing.
+    await tracker.heartbeat();
+    expect((await sessions()).filter(s => s.outcome === 'missed')).toHaveLength(1);
+  });
+
+  it('records no missed print after a restart that missed nothing, or one cancelled while preparing', async () => {
+    await bambuPrint(ha, flush, { name: 'seen', plate: 20, tray: 1 });
+    tracker.stop();
+    ha.restart();
+    await boot();
+    await tracker.heartbeat();
+    tracker.stop();
+    ha.set(X1.status, 'prepare');
+    ha.set(X1.name, 'cancelled');
+    ha.set(X1.file, 'cancelled.gcode.3mf');
+    ha.tick(60_000);
+    ha.set(X1.status, 'failed');
+    await boot();
+    await tracker.heartbeat();
+    expect((await sessions()).map(s => s.outcome)).toEqual(['finished']);
   });
 
   it('closes a print it did not see end, and bills the one that followed', async () => {
@@ -983,6 +1015,18 @@ describe('Creality edge cases', () => {
     for (const mm of [1_000, 1_400, 1_800, 2_200]) await frame('printing', mm, 60);
     await frame('completed', 2_200, 100, 1_000);
     expect(spoolman.used(21)).toBeCloseTo(grams(1_500 + 2_200), 3);
+  });
+
+  it('records a job that completed while SpoolmanSync was stopped', async () => {
+    await crealityPrint(ha, flush, { file: 'seen.gcode', slot: 1, steps: 4, cmPerStep: 50, startMm: 20_000 });
+    tracker.stop();
+    await crealityPrint(ha, async () => {}, { file: 'unseen.gcode', slot: 2, steps: 4, cmPerStep: 50, startMm: 2_000 });
+    await boot();
+    await tracker.heartbeat();
+    expect((await sessions()).map(s => [s.name, s.outcome])).toEqual([['seen.gcode', 'finished'], ['unseen.gcode', 'missed']]);
+    // The next job still counts from the right place.
+    await crealityPrint(ha, flush, { file: 'next.gcode', slot: 3, steps: 4, cmPerStep: 50, startMm: 2_000 });
+    expect(spoolman.used(23)).toBeCloseTo(grams(4 * 500), 3);
   });
 
   it('keeps counting through paused, processing and powered-off frames', async () => {

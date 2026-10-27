@@ -46,7 +46,7 @@ async function boot(): Promise<void> {
     discover: async () => printers,
     spoolman: async () => spoolman as unknown as SpoolmanClient,
     refreshCfs: async () => {},
-    source: onChange => ha.source(onChange),
+    source: (onChange, onStatus) => ha.source(onChange, onStatus),
     now: () => ha.now,
   });
   await tracker.start();

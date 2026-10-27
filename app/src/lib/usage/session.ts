@@ -24,7 +24,7 @@
 import type { EntityMap, EntityState } from './entities';
 import type { PrinterWatch } from './printers';
 
-export type Outcome = 'finished' | 'failed' | 'cancelled' | 'ended' | 'interrupted' | 'abandoned';
+export type Outcome = 'finished' | 'failed' | 'cancelled' | 'ended' | 'interrupted' | 'abandoned' | 'missed';
 
 /** What the printer says it is printing: Bambu's subtask_name and gcode_file, Creality's file. */
 export interface Job {
@@ -206,7 +206,7 @@ function slicerTrays(watch: PrinterWatch, attributes: Record<string, unknown>): 
  * tracker saw start, since one found under way can show any progress.
  */
 function resumePoint(s: SessionState, prev: PreviousPrint | null, pct: number): number {
-  if (!prev || prev.outcome === 'finished' || !sameJob(s.job, prev.job)) return 0;
+  if (!prev || prev.outcome === 'finished' || prev.outcome === 'missed' || !sameJob(s.job, prev.job)) return 0;
   if (pct < RESUME_MIN_PCT || prev.progress < RESUME_MIN_PCT || pct < prev.progress - RESUME_SLACK_PCT) return 0;
   if (!s.sawStart && pct > prev.progress + RESUME_SLACK_PCT) return 0;
   return Math.min(pct, prev.progress);
@@ -486,6 +486,24 @@ function advanceCreality(watch: PrinterWatch, map: EntityMap, cur: SessionState 
   }
   if (now - s.seenAt > ABANDON_AFTER_MS) return { session: null, started, ended: end(s, 'abandoned', s.used) };
   return { session: s, started, ended };
+}
+
+/**
+ * A print that ran from start to finish while the tracker was not watching
+ * (SpoolmanSync, or its connection, down throughout): the printer shows a job
+ * other than the last one recorded, completed. Undefined while its status is
+ * not known yet. A job that ended any other way may have used nothing (one
+ * cancelled while preparing), so only completed ones are reported.
+ */
+export function missedPrint(watch: PrinterWatch, map: EntityMap, prev: PreviousPrint | null): Job | null | undefined {
+  const status = map.get(watch.status);
+  if (!status || NO_STATUS.has(status.state)) return undefined;
+  const fileAttr = status.attributes.file;
+  const job: Job = watch.brand === 'creality'
+    ? { name: null, file: typeof fileAttr === 'string' && fileAttr.trim() ? fileAttr.trim() : null }
+    : { name: textState(map, watch.jobName), file: textState(map, watch.gcodeFile) };
+  const completed = watch.brand === 'creality' ? status.state === 'completed' : status.state === 'finish';
+  return prev && completed && otherJob(prev.job, job) ? job : null;
 }
 
 /** Fold the printer's current entity states into its print in progress. */

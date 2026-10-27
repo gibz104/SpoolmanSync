@@ -35,13 +35,13 @@ export class FakeHA {
   connected = true;
   private changed: (ids: string[]) => void = () => {};
 
-  source = (onChange: (ids: string[]) => void) => {
+  source = (onChange: (ids: string[]) => void, onStatus?: (connected: boolean) => void) => {
     this.changed = onChange;
     return {
       states: this.states,
       get connected() { return true; },
       watch: () => {},
-      start: () => {},
+      start: () => onStatus?.(true),
       stop: () => {},
     };
   };

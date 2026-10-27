@@ -19,7 +19,7 @@ import { processGlobal } from '@/lib/process-global';
 import { isValidTrayUuid } from '@/lib/webhook-helpers';
 import { EntitySubscription, type EntityMap } from './entities';
 import { watchFor, watchedEntities, type PrinterWatch } from './printers';
-import { ABANDON_AFTER_MS, advance, plateMark, type Ended, type Outcome, type PreviousPrint, type SessionState } from './session';
+import { ABANDON_AFTER_MS, advance, missedPrint, plateMark, type Ended, type Job, type Outcome, type PreviousPrint, type SessionState } from './session';
 import { markInterruptedWrites, settle, type SettleResult } from './ledger';
 import { removeLegacyEntities } from './legacy-cleanup';
 
@@ -93,6 +93,8 @@ export class UsageTracker {
   private spoolmanDownUntil = 0;
   private stopped = false;
   private detail: string | null = 'starting';
+  /** Printers to check, once their state is known, for a print that ran while the tracker was not connected. */
+  private unchecked = new Set<string>();
 
   constructor(private readonly deps: TrackerDeps) {
     this.source = deps.source(
@@ -100,6 +102,7 @@ export class UsageTracker {
       (connected, detail) => {
         this.detail = connected ? null : detail ?? 'disconnected';
         if (!connected) return;
+        this.unchecked = new Set(this.watches.keys());
         void this.rediscover();
         void this.removeLeftovers();
       },
@@ -233,6 +236,11 @@ export class UsageTracker {
       this.open.delete(prefix);
       await this.end(watch, cur.id, step.ended);
     }
+    if (!step.session && !cur && this.unchecked.has(prefix)) {
+      const missed = missedPrint(watch, this.source.states, await this.previousFor(prefix));
+      if (missed !== undefined) this.unchecked.delete(prefix);
+      if (missed) await this.recordMissed(watch, missed);
+    }
     if (!step.session) return;
     if (step.started && watch.brand === 'creality') this.refreshCfs([watch]);
 
@@ -284,6 +292,20 @@ export class UsageTracker {
     if (ended.attention) await this.addAttention(id, [ended.attention]);
     this.previous.set(watch.prefix, previousPrint(state, ended.outcome, this.deps.now()));
     await this.finish(watch, id, ended.used, this.deps.now());
+  }
+
+  /** A print that ran while SpoolmanSync was not watching: what it used is unknown, so it is only recorded. */
+  private async recordMissed(watch: PrinterWatch, job: Job): Promise<void> {
+    const now = new Date(this.deps.now());
+    const state: SessionState = {
+      startedAt: now.getTime(), job, statusAt: now.getTime(), runningSince: null, progress: 100, plate: null,
+      counter: null, counterAt: null, restarted: false, used: {}, lastTray: null, idleSince: null, seenAt: now.getTime(),
+    };
+    const row = await prisma.printSession.create({
+      data: { printer: watch.prefix, name: job.name ?? job.file, startedAt: now, endedAt: now, outcome: 'missed', settled: true, state: JSON.stringify(state) },
+    });
+    this.previous.set(watch.prefix, previousPrint(state, 'missed', now.getTime()));
+    await this.addAttention(row.id, ['This print finished while SpoolmanSync was not following the printer, so nothing was deducted for it; deduct it in Spoolman.']);
   }
 
   /** Write an ended print's final amounts; once complete, record it and stop retrying. */

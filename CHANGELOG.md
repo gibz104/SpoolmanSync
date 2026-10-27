@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Bambu Lab print mixing AMS trays and the external spool is settled to the slicer's figures for the AMS trays, with the rest of the plate going to the external spool, which ha-bambulab leaves out of its per-tray figures.
 - A Creality print is no longer recorded twice when the printer reports it complete a second early, and one resumed after a power loss is charged once whether or not its length counter starts over.
 - A print with skipped objects is flagged, since the plate weight it is charged still includes them, as is a tray with more than one spool assigned to it (an edit made in Spoolman).
+- A print that ran from start to finish while SpoolmanSync (or its connection to Home Assistant) was down is listed under **Recent Prints** as not seen, with a note to deduct it in Spoolman, instead of leaving no trace.
 - A printer just added or shown again in SpoolmanSync is tracked at once, and reconnecting or disconnecting Home Assistant in Settings takes effect immediately rather than at the next reconnect.
 - Auto-configure no longer deletes configuration you added below SpoolmanSync's block in configuration.yaml, and in embedded mode it writes a package file instead of top-level keys that could shadow your own.
 - The tray-change automation for printers without an AMS or CFS no longer fails to load, and a filament name containing a double quote no longer breaks the tray-change webhook.

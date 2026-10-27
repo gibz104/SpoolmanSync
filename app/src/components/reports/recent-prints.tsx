@@ -27,6 +27,7 @@ const OUTCOME: Record<string, string> = {
   ended: 'Ended',
   interrupted: 'Not seen to end',
   abandoned: 'Printer stopped reporting',
+  missed: 'Not seen',
 };
 
 /** What the usage tracker recorded for each recent print. */
