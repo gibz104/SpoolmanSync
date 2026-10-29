@@ -62,8 +62,11 @@ export function watchFor(printer: HAPrinter): PrinterWatch | null {
     const key = ext.unique_id || ext.entity_id;
     const synthetic = !ext.entity_id.includes('.');
     trays.push({ key, entityId: synthetic ? null : ext.entity_id, label: ext.slot_name || 'External', external: true });
-    const index = Number((key.match(/_ExternalSpool(\d+)/i) ?? [])[1] ?? 1);
-    name(index > 1 ? `External Spool ${index}` : 'External Spool', key);
+    // On a dual-nozzle printer ha-bambulab's ExternalSpool entity is the left
+    // nozzle's spool (its index 1) and ExternalSpool2 the right's (index 0),
+    // while print_weight names them by index: "External Spool" is index 0.
+    const second = /_ExternalSpool2_/i.test(key);
+    name(printer.external_spools.length > 1 && !second ? 'External Spool 2' : 'External Spool', key);
   }
 
   return {

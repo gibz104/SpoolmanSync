@@ -795,6 +795,26 @@ describe('Dual-nozzle H2D', () => {
     expect(spoolman.used(47)).toBe(30);
   });
 
+  it('settles a print from one external spool by the slicer\'s name for it when no active flag shows', async () => {
+    // An older ha-bambulab: the external spools carry no active flag, so only
+    // print_weight's name for the spool says which fed -- by index, which on a
+    // dual-nozzle printer is the other way round from the entities.
+    for (const id of [H2D.ext(1), H2D.ext(2)]) ha.set(id, 'PLA', { name: 'PLA' });
+    ha.set(H2D.status, 'prepare');
+    ha.set(H2D.name, 'left-ext');
+    ha.set(H2D.file, 'left-ext.gcode.3mf');
+    ha.set(H2D.weight, 25, { 'External Spool 2': 25 });
+    ha.tick(1000); await flush();
+    ha.set(H2D.progress, 0);
+    ha.set(H2D.status, 'running');
+    ha.tick(5000); await flush();
+    for (let pct = 1; pct <= 100; pct++) { ha.set(H2D.progress, pct); ha.tick(30_000); await flush(); }
+    ha.set(H2D.status, 'finish');
+    ha.tick(1000); await flush();
+    expect(spoolman.used(46)).toBe(25);
+    expect(spoolman.used(47)).toBe(0);
+  });
+
   it('bills the AMS HT by its slicer name', async () => {
     await h2dPrint(ha, flush, {
       name: 'ht', plate: 40, feed: [[0, H2D.ht], [75, H2D.tray(1, 1)]], split: { 'AMS HT 1': 30, 'AMS 1 Tray 1': 10 },

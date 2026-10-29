@@ -210,7 +210,9 @@ export function h2dIdle(ha: FakeHA): void {
 /**
  * One H2D print. `feed` names the slot feeding from each progress on; as in
  * ha-bambulab, print_weight's attributes are the AMS split unless an external
- * spool is active, when they are the whole plate under that spool's name.
+ * spool is active, when they are the whole plate under that spool's name --
+ * by its index, which on a dual-nozzle printer is the other way round from the
+ * entities: ExternalSpool (left nozzle) is "External Spool 2".
  */
 export async function h2dPrint(ha: FakeHA, flush: () => Promise<void>, o: {
   name: string; plate: number; feed: Array<[number, string]>; split: Record<string, number>;
@@ -218,7 +220,7 @@ export async function h2dPrint(ha: FakeHA, flush: () => Promise<void>, o: {
 }): Promise<void> {
   const step = async (ms: number) => { ha.tick(ms); await flush(); };
   const attrs = (active: string) =>
-    active === H2D.ext(1) ? { 'External Spool': o.plate } : active === H2D.ext(2) ? { 'External Spool 2': o.plate } : o.split;
+    active === H2D.ext(1) ? { 'External Spool 2': o.plate } : active === H2D.ext(2) ? { 'External Spool': o.plate } : o.split;
   const feed = (slot: string) => {
     for (const id of H2D_SLOTS) ha.attr(id, { active: id === slot });
     ha.set(H2D.weight, o.plate, attrs(slot));
