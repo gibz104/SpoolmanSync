@@ -1,9 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
-import { SpoolmanClient } from '@/lib/api/spoolman';
+import { SpoolmanClient, type Spool } from '@/lib/api/spoolman';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { createActivityLog } from '@/lib/activity-log';
 import { applyLocationSync } from '@/lib/spool-location';
+import { trayCarriesSpoolSerial } from '@/lib/creality';
+import { shouldStoreTagOnAssign } from '@/lib/tag-learning';
+
+async function storeTagOnAssign(client: SpoolmanClient, spool: Spool, trayId: string): Promise<void> {
+  const haClient = await HomeAssistantClient.fromConnection();
+  if (!haClient) return;
+  const registry = await haClient.getTrayEntityRegistry();
+  const entry = [...registry].find(([entityId, { uniqueId }]) => entityId === trayId || uniqueId === trayId);
+  if (!entry || !trayCarriesSpoolSerial(entry[1].platform)) return;
+
+  const attrs = (await haClient.getState(entry[0]))?.attributes ?? {};
+  const tray = {
+    tray_uuid: attrs.tray_uuid as string | undefined,
+    material: attrs.type as string | undefined,
+    color: attrs.color as string | undefined,
+  };
+  if (!shouldStoreTagOnAssign(tray, spool, await client.getSpools())) return;
+
+  await client.setSpoolTag(spool.id, tray.tray_uuid!);
+  await createActivityLog({
+    type: 'tag_stored',
+    message: `Stored spool serial on spool #${spool.id} at assignment to ${trayId}`,
+    details: { spoolId: spool.id, trayId, trayUuid: tray.tray_uuid },
+  });
+}
 
 export async function GET() {
   try {
@@ -65,6 +90,12 @@ export async function POST(request: NextRequest) {
     await applyLocationSync(client);
 
     const updatedSpool = await client.assignSpoolToTray(spoolId, trayId);
+
+    // Learn the spool's RFID serial now rather than after its first print, so
+    // the next load of this spool matches by serial. Fire-and-forget: a slow or
+    // hanging Home Assistant must not delay or fail the assignment.
+    storeTagOnAssign(client, updatedSpool, trayId)
+      .catch(err => console.warn('Could not store spool serial at assignment:', err));
 
     // Log activity
     await createActivityLog({
