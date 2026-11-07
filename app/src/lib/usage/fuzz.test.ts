@@ -72,7 +72,14 @@ async function settleAll(): Promise<void> {
   }
 }
 
-afterEach(() => tracker?.stop());
+// A history runs on settled promises alone (in-memory fakes, synchronous
+// SQLite), so yield to the event loop between runs: Vitest's progress reports
+// to its main process are otherwise not acknowledged for minutes, and a long
+// run ends with a spurious "Timeout calling onTaskUpdate" error.
+afterEach(async () => {
+  tracker?.stop();
+  await new Promise(resolve => setImmediate(resolve));
+});
 
 const close = (got: number, want: number, tol: number) => Math.abs(got - want) <= tol;
 
@@ -99,10 +106,13 @@ describe('Bambu histories', () => {
     before: 'nothing' | 'ha' | 'power';
   }
 
-  function plan(r: Random): Print[] {
+  function plan(r: Random, clears: boolean): Print[] {
     const prints: Print[] = [];
     const used = new Set<number>();
     const plate = () => {
+      // Only a plate cleared as the print starts shows a new job of the last one's weight.
+      const last = prints.at(-1);
+      if (clears && last && r.chance(0.25)) return last.plate;
       let g: number;
       do g = r.int(100, 30_000) / 100; while (used.has(g));
       used.add(g);
@@ -121,7 +131,7 @@ describe('Bambu histories', () => {
         continue;
       }
       if (last && last.outcome !== 'cancel' && !last.resume && r.chance(0.2)) {
-        // The same job again, identical plate: nothing new is written for it.
+        // The same job again, identical plate: before ha-bambulab 2.3, nothing new is written for it.
         prints.push({ ...last, outcome: 'finish', endAt: 100, resume: false, namesAt: 'status', before: before() });
         continue;
       }
@@ -154,7 +164,11 @@ describe('Bambu histories', () => {
   const slotAt = (p: Print, pct: number) => p.feed.filter(([at]) => at < Math.max(pct, 1)).at(-1)![1];
 
   for (const seed of SEEDS) {
-    it(`bills what each print used (seed ${seed})`, async () => {
+    // Odd seeds play ha-bambulab 2.3, which zeroes print_weight as each print
+    // starts; even ones the versions before it, which keep the last plate until
+    // the new print's 3mf is parsed.
+    const clears = seed % 2 === 1;
+    it(`bills what each print used (seed ${seed}${clears ? ', ha-bambulab 2.3' : ''})`, async () => {
       const r = random(seed);
       await reset([bambuPrinter()]);
       for (const n of [1, 2, 3, 4]) spoolman.add(SPOOL(n), X1.key(n));
@@ -162,7 +176,7 @@ describe('Bambu histories', () => {
       bambuIdle(ha);
       await boot();
 
-      const prints = plan(r);
+      const prints = plan(r, clears);
       const expected: Array<{ total: number; perSlot: Record<number, number> | null }> = [];
       let running = true;
       const flush = async () => { if (running) await tracker!.flush(); };
@@ -213,6 +227,7 @@ describe('Bambu histories', () => {
           await step(60_000);
         }
         ha.set(X1.status, 'prepare');
+        if (clears) { parsed = { grams: 0, split: {} }; known = false; render(); }
         if (p.namesAt === 'status') names();
         if (p.plateAt === 'prepare') parse();
         await step(1_000);

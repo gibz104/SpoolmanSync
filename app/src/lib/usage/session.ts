@@ -212,7 +212,7 @@ function resumePoint(s: SessionState, prev: PreviousPrint | null, pct: number): 
   return Math.min(pct, prev.progress);
 }
 
-const NEVER_REPORTED = 'The printer never reported this print\'s weight (Home Assistant shows no change when it matches the last print\'s), so nothing was deducted.';
+const NEVER_REPORTED = 'Home Assistant never reported this print\'s weight, so nothing was deducted. This happens when ha-bambulab cannot find the print\'s file, or when a print weighs exactly what the last one did, which Home Assistant shows as no change.';
 
 /** A plate's weight and split, to tell one re-rendered from one newly parsed. */
 export const plateMark = (grams: number, trays: Record<string, number> | null) =>

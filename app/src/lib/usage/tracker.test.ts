@@ -167,6 +167,35 @@ describe('Bambu', () => {
     expect(await attention()).toContain('never reported this print\'s weight');
   });
 
+  it('does not bill a two-colour print the weight left over from the print before (#90)', async () => {
+    // ha-bambulab could not find the second print's 3mf, so print_weight kept the
+    // first print's 2.62g throughout. The old YAML charged a 69g print those
+    // 2.62g, spread over its colour changes.
+    await bambuPrint(ha, flush, { name: 'small', plate: 2.62, tray: 2 });
+    await bambuPrint(ha, flush, {
+      name: 'part', plate: 69.09, tray: [[0, 1], [28, 2], [34, 1], [36, 2], [40, 1]], writesPlate: false,
+    });
+    expect(spoolman.used(1)).toBe(0);
+    expect(spoolman.used(2)).toBe(2.62);
+    const part = (await sessions())[1];
+    expect(part).toMatchObject({ name: 'part', outcome: 'finished', deductions: [] });
+    expect(part.attention).toContain('never reported this print\'s weight');
+  });
+
+  it('bills a different job of the last one\'s weight once ha-bambulab 2.3 clears the plate at the start', async () => {
+    await bambuPrint(ha, flush, { name: 'cube', plate: 50, tray: 1, clearsPlate: true });
+    await bambuPrint(ha, flush, { name: 'cube-copy', plate: 50, tray: 1, clearsPlate: true });
+    expect(spoolman.used(1)).toBe(100);
+    expect(await attention()).toBe('');
+  });
+
+  it('bills nothing, and says so, when ha-bambulab 2.3 clears the plate and never finds the new one', async () => {
+    await bambuPrint(ha, flush, { name: 'cube', plate: 50, tray: 1, clearsPlate: true });
+    await bambuPrint(ha, flush, { name: 'part', plate: 69, tray: 2, clearsPlate: true, writesPlate: false });
+    expect(spoolman.used(2)).toBe(0);
+    expect(await attention()).toContain('never reported this print\'s weight');
+  });
+
   it('bills nothing when the printer powers on, reconnects or Home Assistant restarts while idle (#66)', async () => {
     bambuIdle(ha, { progress: 100, plate: 120, trays: { 'AMS 1 Tray 1': 120 }, name: 'last' });
     ha.tick(1000); await flush();
@@ -219,6 +248,35 @@ describe('Bambu', () => {
     ha.set(X1.status, 'finish');
     ha.tick(1000); await flush();
     expect(spoolman.used(1)).toBe(100);
+  });
+
+  it('charges nothing extra when print_weight reads 0 for a moment mid-print (#83)', async () => {
+    // A1: Home Assistant or ha-bambulab reconnected mid-print and print_weight read
+    // a real 0 for a few seconds; the old usage meter counted its return as filament.
+    let ahead = 0;
+    await bambuPrint(ha, flush, {
+      name: 'clip', plate: 12.07, tray: 1, during: async pct => {
+        if (pct === 14) {
+          ha.set(X1.weight, 0, {});
+          ha.tick(5_000); await flush();
+          ha.set(X1.weight, 12.07, { 'AMS 1 Tray 1': 12.07 });
+          ha.tick(5_000); await flush();
+        }
+        ahead = Math.max(ahead, spoolman.used(1) - 12.07 * pct / 100);
+      },
+    });
+    expect(ahead).toBeLessThan(0.01);
+    expect(spoolman.used(1)).toBe(12.07);
+    expect(await attention()).toBe('');
+  });
+
+  it('settles a print that finishes at 99% without charging the last 1% to the next one (#83)', async () => {
+    await bambuPrint(ha, flush, { name: 'clip', plate: 12.07, tray: 1, endAt: 99 });
+    ha.set(X1.progress, 100);
+    ha.tick(30_000); await flush();
+    await bambuPrint(ha, flush, { name: 'next', plate: 20, tray: 2 });
+    expect(spoolman.used(1)).toBe(12.07);
+    expect(spoolman.used(2)).toBe(20);
   });
 
   it('picks up where it left off after SpoolmanSync restarts mid-print', async () => {
@@ -653,6 +711,26 @@ describe('Bambu edge cases', () => {
     ha.set(X1.status, 'finish');
     ha.tick(1_000); await flush();
     expect(spoolman.used(1)).toBe(100);
+  });
+
+  it('bills nothing more when the printer fails to resume a failed job after a power cycle (#83)', async () => {
+    // X2D: failed at 79%, power-cycled half an hour later. Booting, it tried to
+    // resume and for 12s reported current_stage printing and progress 78 while idle.
+    await bambuPrint(ha, flush, { name: 'part', plate: 18.58, tray: 1, endAt: 79, outcome: 'failed' });
+    expect(spoolman.used(1)).toBe(14.678);
+    ha.tick(30 * 60_000);
+    ha.set(X1.status, 'offline');
+    ha.set(X1.progress, 'unavailable');
+    ha.tick(60_000); await flush();
+    ha.set(X1.status, 'failed');
+    ha.set(X1.stage, 'printing');
+    ha.set(X1.progress, 78);
+    ha.set(X1.status, 'idle');
+    ha.tick(12_000); await flush();
+    ha.set(X1.stage, 'idle');
+    ha.tick(60_000); await flush();
+    expect(spoolman.used(1)).toBe(14.678);
+    expect(await sessions()).toHaveLength(1);
   });
 
   it('bills the whole plate when a failed job is started again from scratch', async () => {

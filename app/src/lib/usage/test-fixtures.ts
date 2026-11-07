@@ -287,6 +287,8 @@ export interface BambuPrintOptions {
   during?: (pct: number) => void | boolean | Promise<void | boolean>;
   /** Skip writing the plate weight (an identical reprint writes nothing new). */
   writesPlate?: boolean;
+  /** ha-bambulab 2.3 and later zero print_weight as a print starts, until they find its plate. */
+  clearsPlate?: boolean;
   /** When the job's names arrive: with the status (default), with RUNNING, or after this progress. */
   namesAt?: 'running' | number;
 }
@@ -303,6 +305,7 @@ export async function bambuPrint(ha: FakeHA, flush: () => Promise<void>, o: Bamb
 
   const names = () => { ha.set(X1.name, o.name); ha.set(X1.file, `${o.name}.gcode.3mf`); };
   ha.set(X1.status, 'prepare');
+  if (o.clearsPlate) ha.set(X1.weight, 0, {});
   if (o.namesAt === undefined) names();
   if (o.cloud) writePlate();
   await step(1_000);
