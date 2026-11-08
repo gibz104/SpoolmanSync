@@ -4,7 +4,7 @@
 
 ## Supported Printers
 
-- **Bambu Lab**: X1C, X1 Carbon, P1S, P1P, A1, A1 mini, H2D with AMS, AMS 2 Pro, AMS HT, AMS Lite (via ha-bambulab integration)
+- **Bambu Lab**: X1C, X1 Carbon, P1S, P1P, P2S, A1, A1 mini, H2D, H2C, X2D with AMS, AMS 2 Pro, AMS HT, AMS Lite (via ha-bambulab integration)
 - **Creality**: K1, K1C, K1 Max, K2, K2 Pro, K2 Plus, Hi, Ender 3 V3 with CFS / Creality Filament System (via ha_creality_ws integration)
 
 Works with filament from any vendor (Polymaker, Sunlu, Elegoo, Hatchbox, eSUN, Bambu Lab, generic, etc.) — not just printer-brand filament.
@@ -13,7 +13,7 @@ Works with filament from any vendor (Polymaker, Sunlu, Elegoo, Hatchbox, eSUN, B
 
 - Web dashboard showing all printers, AMS/CFS units, trays, and spool assignments
 - Click-to-assign spools from Spoolman inventory with search and filters
-- Automatic filament usage tracking: deducted per tray as a print runs, settled to the slicer's per-tray figures when it finishes, with each print listed under Reports
+- Automatic filament usage tracking: deducted per tray as a print runs, settled to the slicer's per-tray figures when it finishes, with each print listed under Reports → Recent Prints
 - Multi-AMS and multi-CFS support (multiple filament units per printer)
 - Multi-brand printers on the same dashboard (e.g., Bambu Lab + Creality side by side)
 - QR code scanning (scan Spoolman QR codes or custom barcodes)
@@ -22,7 +22,7 @@ Works with filament from any vendor (Polymaker, Sunlu, Elegoo, Hatchbox, eSUN, B
 - Low stock alerts via Home Assistant notifications with configurable thresholds and grouping
 - Kiosk mode for touchscreen spool-scanning stations (e.g., Raspberry Pi)
 - Localized Home Assistant support (English, German, Dutch, Spanish, Italian, French, and more)
-- Activity logging for spool changes and sync events
+- Activity log of spool changes, prints started and filament deducted
 - External spool / non-AMS printing support
 
 ## Installation Modes
@@ -35,8 +35,9 @@ Works with filament from any vendor (Polymaker, Sunlu, Elegoo, Hatchbox, eSUN, B
 
 Tracked by SpoolmanSync itself over Home Assistant's WebSocket API; no Home Assistant helpers or automations are involved.
 
-- **Bambu Lab**: ha-bambulab's `print_weight` (the slicer's plate weight, with per-tray grams) times print progress, charged to the tray feeding at the time and settled to the slicer's per-tray figures when a print finishes
+- **Bambu Lab**: ha-bambulab's `print_weight` (the slicer's plate weight, with per-tray grams) times print progress, counted from when the printer starts printing (heating, levelling and calibrating move the progress but use next to no filament), charged to the tray feeding at the time and settled to the slicer's per-tray figures, purge and prime tower included, when a print finishes
 - **Creality**: the extruded length ha_creality_ws reports for the job, converted to weight with the density and diameter Spoolman records for the spool's filament
+- A cancelled or failed print is charged for what it printed; one cancelled while the printer is still preparing is charged nothing
 - Handles prints resumed after a power loss, AMS backup-spool switching, spools swapped mid-print, prints mixing AMS trays and the external spool, and dual-nozzle printers (H2D, H2C, X2D)
 - Deductions Spoolman cannot take are kept and written once it is reachable; anything that cannot be accounted for is flagged on the print rather than guessed
 
@@ -56,8 +57,8 @@ Matching works by:
 - [Docker Hub](https://hub.docker.com/r/gibz104/spoolmansync)
 - [GitHub Issues](https://github.com/gibz104/SpoolmanSync/issues)
 
-## Optional Dependencies
+## Requirements
 
-- [Spoolman](https://github.com/Donkie/Spoolman): Filament inventory manager that SpoolmanSync syncs with
-- [ha-bambulab](https://github.com/greghesp/ha-bambulab): Home Assistant integration for Bambu Lab printers
-- [ha_creality_ws](https://github.com/3dg1luk43/ha_creality_ws): Home Assistant integration for Creality printers
+- [Spoolman](https://github.com/Donkie/Spoolman): Filament inventory manager that SpoolmanSync syncs with (required)
+- [ha-bambulab](https://github.com/greghesp/ha-bambulab): Home Assistant integration for Bambu Lab printers (bundled in embedded mode)
+- [ha_creality_ws](https://github.com/3dg1luk43/ha_creality_ws): Home Assistant integration for Creality printers (bundled in embedded mode)
