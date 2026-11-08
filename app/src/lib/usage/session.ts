@@ -7,16 +7,18 @@
  * cannot change the total; the ledger only ever writes the difference between
  * what a tray has used and what Spoolman has already been told.
  *
- * Bambu (ha-bambulab): used = plate weight × progress. The traps are readings
- * left over from the previous print: progress keeps its last value until the
- * printer resets it, and print_weight keeps the previous plate until the new
- * 3mf is parsed (and is re-published, unchanged, whenever Home Assistant
- * restarts). So progress only counts once written after the print was seen
- * running, and the plate only once written after the print started — or, for
- * an identical reprint that writes nothing new, when it matches the plate the
- * previous print of the same job confirmed. A job the printer resumes after it
- * already ended unfinished (power-loss recovery) owes only what it prints from
- * where it picked up.
+ * Bambu (ha-bambulab): used = plate weight × progress, counted from where the
+ * printer began printing: it heats, levels and calibrates first, which moves
+ * the progress (the slicer counts that routine in its time estimate) but uses
+ * next to no filament. The traps are readings left over from the previous
+ * print: progress keeps its last value until the printer resets it, and
+ * print_weight keeps the previous plate until the new 3mf is parsed (and is
+ * re-published, unchanged, whenever Home Assistant restarts). So progress only
+ * counts once written after the print was seen running, and the plate only once
+ * written after the print started — or, for an identical reprint that writes
+ * nothing new, when it matches the plate the previous print of the same job
+ * confirmed. A job the printer resumes after it already ended unfinished
+ * (power-loss recovery) owes only what it prints from where it picked up.
  *
  * Creality (ha_creality_ws): used = the job's extruded-length counter, which
  * restarts with every job and shows the previous job's figure until then.
@@ -54,6 +56,14 @@ export interface SessionState {
   progress: number;
   /** Bambu: the progress (%) a resumed job picked up from, else 0; unset until progress is first read. */
   resumedFrom?: number;
+  /**
+   * Bambu: the progress (%) at which the printer, seen heating, levelling and
+   * calibrating, began printing; for a resumed job, where the attempt it resumes
+   * began. Null while a print seen starting is still preparing, when it owes
+   * nothing yet. Unset when no stage was reported or the print was found under
+   * way: printing then counts from 0.
+   */
+  printingFrom?: number | null;
   /** Bambu: objects skipped during this print. */
   skipped?: number;
   plate: Plate | null;
@@ -89,8 +99,10 @@ export interface PreviousPrint {
   outcome: Outcome | null;
   /** App time it ended (ms). */
   endedAt: number | null;
-  /** Bambu: how far it got (%). */
+  /** Bambu: how far it got (%); 0 if it ended before it began printing. */
   progress: number;
+  /** Bambu: the progress (%) at which its printing began, for a job resumed from it. */
+  printingFrom: number;
   plateGrams: number | null;
   /** Bambu: `plateMark` of its plate. */
   plate: string | null;
@@ -132,6 +144,10 @@ const LATE_MS = 5 * 60_000;
 const RESTARTED_DROP_PCT = 10;
 /** Below this, picking up "where it stopped" cannot be told from starting over. */
 const RESUME_MIN_PCT = 5;
+/** A print first seen preparing past this progress (%) may have printed already, so it is not held. */
+const PREPARE_MAX_PCT = 5;
+/** A print held while preparing that goes unseen this long may have begun printing meanwhile (the tracker looks every minute). */
+const HELD_GAP_MS = 3 * 60_000;
 /** A dip below the counter after an outage that climbs this far (cm) is the job counting again from zero. */
 const RESTART_CONFIRM_CM = 10;
 /** ha_creality_ws reads a job completed a second early, then printing again at 99%, for about this long at most. */
@@ -169,10 +185,16 @@ function feeding(watch: PrinterWatch, map: EntityMap): string[] {
   }).map(tray => tray.key);
 }
 
+/** The trays feeding now, noting the one if just one is: what is owed while none is goes to it. */
+function noteFeeding(s: SessionState, watch: PrinterWatch, map: EntityMap): string[] {
+  const trays = feeding(watch, map);
+  if (trays.length === 1) s.lastTray = trays[0];
+  return trays;
+}
+
 /** Give `amount` to the trays feeding now, or the last one that was. */
 function allocate(s: SessionState, amount: number, watch: PrinterWatch, map: EntityMap): void {
-  let trays = feeding(watch, map);
-  if (trays.length === 1) s.lastTray = trays[0];
+  let trays = noteFeeding(s, watch, map);
   if (trays.length === 0 && s.lastTray) trays = [s.lastTray];
   if (trays.length === 0 && watch.trays.length === 1) trays = [watch.trays[0].key];
   if (trays.length === 0) return; // owed until a tray reports feeding
@@ -211,6 +233,25 @@ function resumePoint(s: SessionState, prev: PreviousPrint | null, pct: number): 
   if (!s.sawStart && pct > prev.progress + RESUME_SLACK_PCT) return 0;
   return Math.min(pct, prev.progress);
 }
+
+/** Decide, from the first progress (%) clear of zero, whether this print resumes the last one. */
+function decideResume(s: SessionState, prev: PreviousPrint | null, pct: number): void {
+  s.resumedFrom = s.progress === 0 && total(s.used) === 0 ? resumePoint(s, prev, pct) : 0;
+  // Its printing began where the first attempt's did.
+  if (s.resumedFrom > 0) s.printingFrom = prev?.printingFrom ?? 0;
+}
+
+/** The share of the plate printed by this progress (%): none of it before printing began. */
+function printedShare(s: SessionState, pct: number): number {
+  if (s.printingFrom === null) return 0;
+  const from = s.printingFrom ?? 0;
+  if (pct >= 100) return 1;
+  return from >= 100 ? 0 : Math.max(0, pct - from) / (100 - from);
+}
+
+/** What the progress says this print owes in all: its share of the plate, less a resumed job's earlier attempts. */
+const owedByProgress = (s: SessionState) =>
+  s.plate ? s.plate.grams * Math.max(0, printedShare(s, s.progress) - printedShare(s, s.resumedFrom ?? 0)) : 0;
 
 const NEVER_REPORTED = 'Home Assistant never reported this print\'s weight, so nothing was deducted. This happens when ha-bambulab cannot find the print\'s file, or when a print weighs exactly what the last one did, which Home Assistant shows as no change.';
 
@@ -279,7 +320,7 @@ function bambuEnd(watch: PrinterWatch, s: SessionState, outcome: Outcome): Ended
       return done({ ...trays, ...Object.fromEntries(takers.map(([key, g]) => [key, rest * g / weight])) });
     }
   }
-  const owed = grams * (100 - from) / 100;
+  const owed = grams * (1 - printedShare(s, from));
   const observed = total(s.used);
   if (observed > 0) return done(Object.fromEntries(Object.entries(s.used).map(([k, g]) => [k, g * owed / observed])));
   if (s.lastTray) return done({ [s.lastTray]: owed });
@@ -312,7 +353,7 @@ function advanceBambu(watch: PrinterWatch, map: EntityMap, cur: SessionState | n
     // how far the one it replaced got.
     if (BAMBU_STARTING.has(status) && s.plate && progressEntity && progressEntity.lastUpdated >= s.runningSince && Number.isFinite(progress)) {
       s.progress = Math.max(s.progress, Math.min(100, progress));
-      const due = s.plate.grams * (s.progress - (s.resumedFrom ?? 0)) / 100 - total(s.used);
+      const due = owedByProgress(s) - total(s.used);
       if (due > 0.0005) allocate(s, due, watch, map);
     }
     ended = end(s, 'interrupted', s.used);
@@ -325,6 +366,16 @@ function advanceBambu(watch: PrinterWatch, map: EntityMap, cur: SessionState | n
     s.shownAtStart = shownPlate(watch, watch.weight ? map.get(watch.weight) : undefined);
     started = true;
   }
+
+  // A print seen starting owes nothing while the printer prepares, and the
+  // plate is spread over the progress from where it says it is printing --
+  // before this observation's progress counts. Unseen for a while, it may have
+  // begun meanwhile, so it is taken to have begun where it was last seen.
+  const stage = textState(map, watch.stage);
+  if (s.printingFrom === undefined && s.sawStart && s.progress < PREPARE_MAX_PCT && stage !== null && stage !== 'idle' && stage !== 'printing') {
+    s.printingFrom = null;
+  }
+  if (s.printingFrom === null && (stage === 'printing' || now - s.seenAt > HELD_GAP_MS)) s.printingFrom = s.progress;
 
   if (statusEntity) s.statusAt = statusEntity.lastChanged;
   if (!NO_STATUS.has(status)) s.seenAt = now;
@@ -344,15 +395,15 @@ function advanceBambu(watch: PrinterWatch, map: EntityMap, cur: SessionState | n
   if (s.runningSince !== null && progressEntity && progressEntity.lastUpdated >= s.runningSince && Number.isFinite(progress)) {
     const pct = Math.min(100, Math.max(0, progress));
     // Decided by the first reading clear of zero: a lone 0 can be a glitch.
-    if (s.resumedFrom === undefined && pct >= RESUME_MIN_PCT) {
-      s.resumedFrom = s.progress === 0 && total(s.used) === 0 ? resumePoint(s, prev, pct) : 0;
-    }
+    if (s.resumedFrom === undefined && pct >= RESUME_MIN_PCT) decideResume(s, prev, pct);
     s.progress = Math.max(s.progress, pct);
   }
   if (s.runningSince !== null && s.plate) {
-    const due = s.plate.grams * (s.progress - (s.resumedFrom ?? 0)) / 100 - total(s.used);
+    const due = owedByProgress(s) - total(s.used);
     if (due > 0.0005) allocate(s, due, watch, map);
   }
+  // Owing nothing yet, the tray feeding still says where the plate goes if it finishes unsplit.
+  if (s.printingFrom === null) noteFeeding(s, watch, map);
   const skippedEntity = watch.skipped ? map.get(watch.skipped) : undefined;
   const skipped = Number(skippedEntity?.state);
   if (s.runningSince !== null && skippedEntity && skippedEntity.lastChanged >= s.startedAt && skipped > 0) {
@@ -362,7 +413,7 @@ function advanceBambu(watch: PrinterWatch, map: EntityMap, cur: SessionState | n
   const outcome = BAMBU_END[status];
   if (outcome && s.resumedFrom === undefined && s.runningSince !== null && Number.isFinite(progress)) {
     // Ended without a reading of its own: a job resumed with nothing left to print.
-    s.resumedFrom = s.progress === 0 && total(s.used) === 0 ? resumePoint(s, prev, progress) : 0;
+    decideResume(s, prev, progress);
   }
   if (outcome) return { session: null, started, ended: bambuEnd(watch, s, outcome) };
   if (now - s.seenAt > ABANDON_AFTER_MS) return { session: null, started, ended: end(s, 'abandoned', s.used) };

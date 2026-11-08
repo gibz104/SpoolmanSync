@@ -291,6 +291,11 @@ export interface BambuPrintOptions {
   clearsPlate?: boolean;
   /** When the job's names arrive: with the status (default), with RUNNING, or after this progress. */
   namesAt?: 'running' | number;
+  /**
+   * Report current_stage: the printer heats, levels and calibrates while the
+   * progress moves up to here (%), then prints. Unset, no stage is reported.
+   */
+  warmup?: number;
 }
 
 /** One print as ha-bambulab publishes it, one pass after each change. */
@@ -320,6 +325,7 @@ export async function bambuPrint(ha: FakeHA, flush: () => Promise<void>, o: Bamb
     ha.set(X1.status, 'running');
   }
   if (o.namesAt === 'running') names();
+  if (o.warmup !== undefined) ha.set(X1.stage, 'heatbed_preheating');
   await step(5_000);
   if (!o.cloud) writePlate();
   await step(1_000);
@@ -328,12 +334,14 @@ export async function bambuPrint(ha: FakeHA, flush: () => Promise<void>, o: Bamb
   for (let pct = 1; pct <= endAt; pct++) {
     const next = schedule.filter(([at]) => at < pct).at(-1);
     if (next) feed(next[1]);
+    if (o.warmup !== undefined) ha.set(X1.stage, pct <= o.warmup ? 'auto_bed_leveling' : 'printing');
     ha.set(X1.progress, pct);
     if (o.namesAt === pct) names();
     await step(30_000);
     if (await o.during?.(pct)) return;
   }
   ha.set(X1.status, o.outcome ?? 'finish');
+  if (o.warmup !== undefined) ha.set(X1.stage, 'idle');
   await step(1_000);
   for (const m of [1, 2, 3, 4]) ha.attr(X1.tray(m), { active: false });
   await step(1_000);

@@ -32,6 +32,8 @@ export interface PrinterWatch {
   gcodeFile?: string;
   /** Bambu: how many objects were skipped mid-print. */
   skipped?: string;
+  /** Bambu: current_stage, which tells heating, levelling and calibrating from printing. */
+  stage?: string;
   /** Creality: used_material_length (cm), for integration versions whose status lacks the counter. */
   usedLength?: string;
   trays: TrayWatch[];
@@ -80,6 +82,7 @@ export function watchFor(printer: HAPrinter): PrinterWatch | null {
     jobName: printer.job_name_entity,
     gcodeFile: printer.gcode_file_entity,
     skipped: printer.skipped_objects_entity,
+    stage: printer.current_stage_entity,
     usedLength: printer.used_material_entity,
     trays,
     slicerNames,
@@ -89,7 +92,7 @@ export function watchFor(printer: HAPrinter): PrinterWatch | null {
 /** Every entity the tracker needs to see for these printers. */
 export function watchedEntities(watches: PrinterWatch[]): string[] {
   return [...new Set(watches.flatMap(w => [
-    w.status, w.progress, w.weight, w.jobName, w.gcodeFile, w.skipped, w.usedLength,
+    w.status, w.progress, w.weight, w.jobName, w.gcodeFile, w.skipped, w.stage, w.usedLength,
     ...w.trays.map(t => t.entityId),
   ].filter((id): id is string => !!id)))];
 }

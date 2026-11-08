@@ -836,6 +836,159 @@ describe('Bambu edge cases', () => {
   });
 });
 
+describe('Bambu warming up', () => {
+  // Heating, levelling and calibrating move the progress -- a small print's
+  // routine took 40% of it on an X1C -- but use next to no filament.
+  beforeEach(async () => {
+    bambuIdle(ha);
+    await boot();
+  });
+
+  it('bills nothing while the printer prepares, and the plate over the printing after', async () => {
+    const billed: Record<number, number> = {};
+    await bambuPrint(ha, flush, { name: 'swatch', plate: 60, tray: 1, warmup: 40, during: pct => { billed[pct] = spoolman.used(1); } });
+    expect(billed[40]).toBe(0);
+    expect(billed[70]).toBe(30);
+    expect(spoolman.used(1)).toBe(60);
+    expect((await sessions())[0]).toMatchObject({ outcome: 'finished', attention: null });
+  });
+
+  it('bills nothing for a print cancelled while the printer prepares, and records it', async () => {
+    await bambuPrint(ha, flush, { name: 'swatch', plate: 60, tray: 1, warmup: 40, endAt: 30, outcome: 'failed' });
+    expect(spoolman.used(1)).toBe(0);
+    expect(await sessions()).toMatchObject([{ outcome: 'failed', settled: true, attention: null, deductions: [] }]);
+  });
+
+  it('keeps the plate of a job cancelled while preparing for a reprint that writes none, across a restart', async () => {
+    await bambuPrint(ha, flush, { name: 'swatch', plate: 60, tray: 1, warmup: 40, endAt: 30, outcome: 'failed' });
+    await bambuPrint(ha, flush, {
+      name: 'swatch', plate: 60, tray: 1, warmup: 40, writesPlate: false, during: pct => {
+        if (pct === 50) tracker.stop();
+        return pct === 50;
+      },
+    });
+    await boot();
+    for (let pct = 51; pct <= 100; pct++) { ha.set(X1.progress, pct); ha.tick(30_000); await flush(); }
+    ha.set(X1.status, 'finish');
+    ha.tick(1000); await flush();
+    expect(spoolman.used(1)).toBe(60);
+    expect(await attention()).toBe('');
+  });
+
+  it('bills a print cancelled while printing for its share of the printing', async () => {
+    await bambuPrint(ha, flush, { name: 'swatch', plate: 60, tray: 1, warmup: 40, endAt: 70, outcome: 'failed' });
+    expect(spoolman.used(1)).toBe(30);
+  });
+
+  it('counts from where it last saw the printer preparing when it was away as printing began', async () => {
+    await bambuPrint(ha, flush, {
+      name: 'swatch', plate: 60, tray: 1, warmup: 40, during: pct => {
+        if (pct === 20) tracker.stop();
+        return pct === 20;
+      },
+    });
+    for (let pct = 21; pct <= 60; pct++) {
+      ha.set(X1.stage, pct <= 40 ? 'auto_bed_leveling' : 'printing');
+      ha.set(X1.progress, pct);
+      ha.tick(30_000);
+    }
+    ha.set(X1.stage, 'changing_filament');
+    await boot();
+    await flush();
+    ha.set(X1.stage, 'printing');
+    for (let pct = 61; pct <= 70; pct++) { ha.set(X1.progress, pct); ha.tick(30_000); await flush(); }
+    ha.set(X1.status, 'failed');
+    ha.tick(1000); await flush();
+    // Printing began at 40%, unseen: counted from 20%, never less than was printed.
+    expect(spoolman.used(1)).toBe(37.5);
+  });
+
+  it('remembers where printing began when SpoolmanSync restarts seconds later', async () => {
+    ha.set(X1.status, 'prepare');
+    ha.set(X1.name, 'swatch');
+    ha.set(X1.file, 'swatch.gcode.3mf');
+    ha.tick(1000); await flush();
+    ha.attr(X1.tray(1), { active: true });
+    ha.set(X1.progress, 0);
+    ha.set(X1.status, 'running');
+    ha.set(X1.stage, 'heatbed_preheating');
+    ha.tick(5000); await flush();
+    ha.set(X1.weight, 60, { 'AMS 1 Tray 1': 60 });
+    ha.tick(5000); await flush();
+    ha.set(X1.progress, 40);
+    ha.tick(5000); await flush();
+    ha.set(X1.progress, 45);
+    ha.tick(5000); await flush();
+    ha.set(X1.stage, 'printing');
+    ha.tick(5000); await flush();
+    tracker.stop();
+    ha.set(X1.progress, 70);
+    ha.tick(60_000);
+    await boot();
+    await flush();
+    ha.set(X1.status, 'failed');
+    ha.tick(1000); await flush();
+    // Printing began at 45%, not the 40% saved a few seconds before.
+    expect(spoolman.used(1)).toBeCloseTo(60 * 25 / 55, 2);
+  });
+
+  it('does not hold a print it found already under way', async () => {
+    tracker.stop();
+    await bambuPrint(ha, async () => {}, { name: 'swatch', plate: 60, tray: 1, warmup: 40, during: pct => pct === 60 });
+    ha.set(X1.stage, 'changing_filament');
+    await boot();
+    await flush();
+    ha.set(X1.progress, 70);
+    ha.tick(30_000); await flush();
+    ha.set(X1.status, 'failed');
+    ha.tick(1000); await flush();
+    // When it began printing is not known, so the progress counts from 0 as it always has.
+    expect(spoolman.used(1)).toBe(42);
+  });
+
+  it('bills a job resumed after power loss for the rest of its printing', async () => {
+    await bambuPrint(ha, flush, { name: 'swatch', plate: 60, tray: 1, warmup: 40, endAt: 70, outcome: 'failed' });
+    expect(spoolman.used(1)).toBe(30);
+    ha.set(X1.status, 'offline');
+    ha.set(X1.progress, 'unavailable');
+    ha.tick(10 * 60_000); await flush();
+    ha.set(X1.status, 'idle');
+    ha.set(X1.progress, 70);
+    ha.tick(60_000); await flush();
+    ha.set(X1.status, 'running');
+    ha.set(X1.stage, 'heatbed_preheating');
+    ha.attr(X1.tray(1), { active: true });
+    ha.tick(60_000); await flush();
+    ha.set(X1.stage, 'printing');
+    for (let pct = 71; pct <= 100; pct++) { ha.set(X1.progress, pct); ha.tick(30_000); await flush(); }
+    ha.set(X1.status, 'finish');
+    ha.tick(1000); await flush();
+    // 30g for 40-70%, the rest of the plate for 70-100%.
+    expect(spoolman.used(1)).toBe(60);
+    expect(await attention()).toContain('resumed the job from 70%');
+  });
+
+  it('does not take the next print of a job cancelled while preparing for a resume of it', async () => {
+    await bambuPrint(ha, flush, { name: 'swatch', plate: 60, tray: 1, warmup: 40, endAt: 30, outcome: 'failed' });
+    ha.set(X1.status, 'prepare');
+    ha.tick(30_000); await flush();
+    ha.set(X1.progress, 0);
+    ha.set(X1.status, 'running');
+    ha.set(X1.stage, 'heatbed_preheating');
+    ha.attr(X1.tray(1), { active: true });
+    ha.tick(60_000); await flush();
+    // Its first reading past the start lands where the cancelled one stopped.
+    ha.set(X1.progress, 30);
+    ha.tick(60_000); await flush();
+    ha.set(X1.stage, 'printing');
+    for (let pct = 41; pct <= 100; pct++) { ha.set(X1.progress, pct); ha.tick(30_000); await flush(); }
+    ha.set(X1.status, 'finish');
+    ha.tick(1000); await flush();
+    expect(spoolman.used(1)).toBe(60);
+    expect(await attention()).toBe('');
+  });
+});
+
 describe('Dual-nozzle H2D', () => {
   beforeEach(async () => {
     printers = [h2dPrinter()];

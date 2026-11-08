@@ -104,9 +104,11 @@ describe('Bambu histories', () => {
     resume: boolean;
     /** Between this print and the last: Home Assistant restarts, or the printer is power-cycled. */
     before: 'nothing' | 'ha' | 'power';
+    /** Progress (%) the printer heats, levels and calibrates for, reporting its stage; null when it reports none. */
+    warmup: number | null;
   }
 
-  function plan(r: Random, clears: boolean): Print[] {
+  function plan(r: Random, clears: boolean, stages: boolean): Print[] {
     const prints: Print[] = [];
     const used = new Set<number>();
     const plate = () => {
@@ -122,7 +124,8 @@ describe('Bambu histories', () => {
     const count = r.int(2, 4);
     for (let i = 0; i < count; i++) {
       const last = prints.at(-1);
-      if (last && last.outcome === 'failed' && last.endAt >= 10 && r.chance(0.4)) {
+      // Only a print that got to printing has anything to resume.
+      if (last && last.outcome === 'failed' && last.endAt >= 10 && (last.warmup === null || last.endAt > last.warmup) && r.chance(0.4)) {
         const finish = r.chance(0.7);
         prints.push({
           ...last, outcome: finish ? 'finish' : 'failed', endAt: finish ? 100 : r.int(last.endAt + 1, 99),
@@ -135,20 +138,26 @@ describe('Bambu histories', () => {
         prints.push({ ...last, outcome: 'finish', endAt: 100, resume: false, namesAt: 'status', before: before() });
         continue;
       }
+      const warmup = stages ? r.int(0, 45) : null;
       const slot = () => (r.chance(0.2) ? 0 : r.int(1, 4));
       const feed: Array<[number, number]> = [[0, slot()]];
-      for (let n = r.int(0, 2); n > 0; n--) feed.push([r.int(feed.at(-1)![0] + 1, 95), slot()]);
+      // Filament changes come while printing, after any warming up.
+      for (let n = r.int(0, 2); n > 0; n--) feed.push([r.int(Math.max(feed.at(-1)![0], warmup ?? 0) + 1, 95), slot()]);
       const outcome = r.pick(['finish', 'finish', 'finish', 'failed', 'failed', 'cancel'] as const);
       prints.push({
         name: `job-${i}`, plate: plate(), feed, outcome,
         endAt: outcome === 'finish' ? 100 : r.int(1, 99),
         plateAt: r.chance(0.4) ? 'prepare' : r.chance(0.7) ? 0 : r.int(1, 10),
         namesAt: r.chance(0.7) ? 'status' : r.chance(0.5) ? 'running' : r.int(1, 15),
-        runningFirst: r.chance(0.2), resume: false, before: before(),
+        runningFirst: r.chance(0.2), resume: false, before: before(), warmup,
       });
     }
     return prints;
   }
+
+  /** The share of the plate printed by this progress (%), which warming up moves first. */
+  const printed = (p: Print, pct: number) =>
+    p.warmup === null ? pct / 100 : pct >= 100 ? 1 : Math.max(0, pct - p.warmup) / (100 - p.warmup);
 
   /** The slicer's grams per AMS tray (ha-bambulab leaves the external spool out). */
   function amsSplit(p: Print): Record<string, number> {
@@ -157,7 +166,7 @@ describe('Bambu histories', () => {
       if (slot === 0) return;
       const to = p.feed[i + 1]?.[0] ?? 100;
       const key = `AMS 1 Tray ${slot}`;
-      out[key] = Math.round(((out[key] ?? 0) + p.plate * (to - from) / 100) * 100) / 100;
+      out[key] = Math.round(((out[key] ?? 0) + p.plate * (printed(p, to) - printed(p, from))) * 100) / 100;
     });
     return out;
   }
@@ -168,7 +177,10 @@ describe('Bambu histories', () => {
     // starts; even ones the versions before it, which keep the last plate until
     // the new print's 3mf is parsed.
     const clears = seed % 2 === 1;
-    it(`bills what each print used (seed ${seed}${clears ? ', ha-bambulab 2.3' : ''})`, async () => {
+    // Seeds 2-3 of every 4 report current_stage, the printer heating, levelling
+    // and calibrating while the progress moves before it prints.
+    const stages = Math.floor(seed / 2) % 2 === 1;
+    it(`bills what each print used (seed ${seed}${clears ? ', ha-bambulab 2.3' : ''}${stages ? ', warming up' : ''})`, async () => {
       const r = random(seed);
       await reset([bambuPrinter()]);
       for (const n of [1, 2, 3, 4]) spoolman.add(SPOOL(n), X1.key(n));
@@ -176,7 +188,7 @@ describe('Bambu histories', () => {
       bambuIdle(ha);
       await boot();
 
-      const prints = plan(r, clears);
+      const prints = plan(r, clears, stages);
       const expected: Array<{ total: number; perSlot: Record<number, number> | null }> = [];
       let running = true;
       const flush = async () => { if (running) await tracker!.flush(); };
@@ -212,6 +224,10 @@ describe('Bambu histories', () => {
         let offline = false;
         let named = p.namesAt === 'status' || p.namesAt === 'running';
         let late = false; // names or plate arrived after the print was under way
+        const arrive = () => {
+          if (!named && progress >= (p.namesAt as number)) { names(); named = late = true; }
+          if (typeof p.plateAt === 'number' && p.plateAt > 0 && progress >= p.plateAt && parsed.grams !== p.plate) { parse(); late = true; }
+        };
 
         if (p.before === 'ha') {
           ha.restart();
@@ -255,6 +271,27 @@ describe('Bambu histories', () => {
         if (p.plateAt === 0) parse();
         await step(1_000);
 
+        if (p.warmup !== null) {
+          // Heating, levelling and calibrating: the progress moves (0 -> 3 -> 30 on
+          // an X1C), and a print can stop before it begins printing. A resumed job
+          // only heats up again.
+          ha.set(X1.stage, 'heatbed_preheating');
+          await step(30_000);
+          for (const pct of p.resume ? [] : [Math.min(p.warmup, r.int(1, 4)), p.warmup]) {
+            if (pct <= progress || progress >= p.endAt) continue;
+            progress = Math.min(pct, p.endAt);
+            ha.set(X1.stage, 'auto_bed_leveling');
+            ha.set(X1.progress, progress);
+            shown = progress;
+            arrive();
+            await step(60_000);
+          }
+          if (progress < p.endAt) {
+            ha.set(X1.stage, 'printing');
+            await step(5_000);
+          }
+        }
+
         const disturbAt = r.int(progress + 1, Math.max(progress + 1, p.endAt));
         const disturbance = r.pick(['none', 'none', 'ha', 'app', 'spoolman', 'offline', 'glitch', 'timeout', 'swap', 'unassign'] as const);
         let unassigned: { spool: number; tray: string } | null = null;
@@ -263,8 +300,7 @@ describe('Bambu histories', () => {
           progress = Math.min(p.endAt, progress + r.int(1, 4));
           const slot = slotAt(p, progress);
           feed(slot);
-          if (!named && progress >= (p.namesAt as number)) { names(); named = late = true; }
-          if (typeof p.plateAt === 'number' && p.plateAt > 0 && progress >= p.plateAt && parsed.grams !== p.plate) { parse(); late = true; }
+          arrive();
           if (!disturbed && progress >= disturbAt) {
             disturbed = true;
             log.push(`  ${disturbance} at ${progress}`);
@@ -331,12 +367,14 @@ describe('Bambu histories', () => {
         if (unassigned) { spoolman.assign(unassigned.spool, unassigned.tray); unassigned = null; }
         if (!named) { names(); named = late = true; }
         ha.set(X1.status, p.outcome);
+        if (p.warmup !== null) ha.set(X1.stage, 'idle');
         await step(1_000);
         feed(null);
         await step(1_000);
 
-        // A print that ended before its 3mf was parsed has no weight to bill (and is flagged).
-        const owed = known ? p.plate * (p.endAt - start) / 100 : 0;
+        // A print that ended before its 3mf was parsed has no weight to bill (and is
+        // flagged); a resumed job owes the rest of the plate.
+        let owed = known ? p.plate * (printed(p, p.endAt) - printed(p, start)) : 0;
         if (!known) unweighed.add(p.name);
         const slots = new Set(p.feed.map(([, slot]) => slot));
         let perSlot: Record<number, number> | null = known ? null : {};
@@ -345,12 +383,15 @@ describe('Bambu histories', () => {
           // unless that is feeding at the end, when ha-bambulab shows the plate under it alone.
           const split = Object.fromEntries(Object.entries(amsSplit(p)).map(([k, g]) => [Number(k.slice(-1)), g]));
           const rest = p.plate - Object.values(split).reduce((a, b) => a + b, 0);
-          perSlot = slots.has(0) ? { ...split, 0: rest } : split;
+          // Never seen feeding, it is only told from the slicer's rounding when the rest is more than that.
+          const rounding = slots.has(0) && !seen.some(([, slot]) => slot === 0) && rest <= Math.max(0.5, p.plate * 0.02) / 4;
+          if (rounding) owed -= rest;
+          perSlot = slots.has(0) && !rounding ? { ...split, 0: rest } : split;
         } else if (known && disturbance === 'none' && !late && p.plateAt !== 'prepare') {
           perSlot = {};
           let last = start;
           for (const [pct, slot] of seen) {
-            perSlot[slot] = (perSlot[slot] ?? 0) + p.plate * (pct - last) / 100;
+            perSlot[slot] = (perSlot[slot] ?? 0) + p.plate * (printed(p, pct) - printed(p, last));
             last = pct;
           }
         }
@@ -367,7 +408,7 @@ describe('Bambu histories', () => {
         const state = JSON.parse(row.state);
         const perTray: Record<string, number> = {};
         for (const d of row.deductions) perTray[d.trayKey.slice(-6)] = Math.round(((perTray[d.trayKey.slice(-6)] ?? 0) + d.grams) * 1000) / 1000;
-        return `${row.name} ${row.outcome} progress=${state.progress} from=${state.resumedFrom} sawStart=${state.sawStart} billed=${row.deductions.reduce((a, d) => a + d.grams, 0).toFixed(3)} ${JSON.stringify(perTray)} used=${JSON.stringify(state.used)} ${row.attention ?? ''}`;
+        return `${row.name} ${row.outcome} progress=${state.progress} from=${state.resumedFrom} printingFrom=${state.printingFrom} sawStart=${state.sawStart} billed=${row.deductions.reduce((a, d) => a + d.grams, 0).toFixed(3)} ${JSON.stringify(perTray)} used=${JSON.stringify(state.used)} ${row.attention ?? ''}`;
       });
       const context = `seed ${seed}\n${log.join('\n')}\nexpected ${JSON.stringify(expected)}\nbilled ${JSON.stringify(billed)}\n${recorded.join('\n')}`;
       expect(close(billed.reduce((a, b) => a + b, 0), total - lost, 0.02 * prints.length), `${context}\nlost to timeouts ${lost}`).toBe(true);

@@ -66,10 +66,10 @@ interface Open {
 /**
  * What a restart must not lose, saved as soon as it changes. Usage and progress
  * are re-read from Home Assistant after a restart, but not that the print
- * reached RUNNING before an outage it ended during.
+ * reached RUNNING before an outage it ended during, or where it began printing.
  */
 const milestones = (s: SessionState) =>
-  JSON.stringify([s.runningSince, s.plate, s.job, s.resumedFrom, s.restarted, s.lastJob, s.outage, s.dip, s.jump, s.skipped]);
+  JSON.stringify([s.runningSince, s.plate, s.job, s.resumedFrom, s.printingFrom, s.restarted, s.lastJob, s.outage, s.dip, s.jump, s.skipped]);
 
 export interface TrackerStatus {
   connected: boolean;
@@ -317,7 +317,10 @@ export class UsageTracker {
     if (!outcome?.complete) await this.addAttention(id, ['Spoolman could not be reached for a day, so this print\'s remaining usage was not deducted.']);
 
     const session = await prisma.printSession.update({ where: { id }, data: { settled: true }, include: { deductions: true } });
-    if (session.deductions.length === 0 && !session.attention) {
+    // One stopped while the printer prepared is kept: it shows the stop was seen,
+    // and a reprint of the job that writes no plate weight needs this one's.
+    const stoppedPreparing = (JSON.parse(session.state) as SessionState).printingFrom === null;
+    if (session.deductions.length === 0 && !session.attention && !stoppedPreparing) {
       await prisma.printSession.delete({ where: { id } });
       return;
     }
@@ -458,7 +461,9 @@ export class UsageTracker {
 
 function previousPrint(state: SessionState, outcome: Outcome | null, endedAt: number): PreviousPrint {
   return {
-    job: state.job, outcome, endedAt, progress: state.progress, counter: state.counter,
+    // One that ended while still preparing printed nothing to resume.
+    job: state.job, outcome, endedAt, progress: state.printingFrom === null ? 0 : state.progress, counter: state.counter,
+    printingFrom: state.printingFrom ?? 0,
     plateGrams: state.plate?.grams ?? null, plate: state.plate ? plateMark(state.plate.grams, state.plate.trays) : null,
   };
 }
