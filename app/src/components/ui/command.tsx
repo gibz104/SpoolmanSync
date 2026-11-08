@@ -13,6 +13,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 
+// cmdk highlights a list's first item as it mounts and scrolls it into view,
+// which scrolls the whole page when the list is below the fold (the Scan page
+// opened part way down). Start with nothing highlighted instead: hovering, the
+// arrow keys and typing in the search box still highlight an item.
+const NOTHING_HIGHLIGHTED = "__nothing-highlighted__"
+
 function Command({
   className,
   ...props
@@ -20,6 +26,7 @@ function Command({
   return (
     <CommandPrimitive
       data-slot="command"
+      defaultValue={NOTHING_HIGHLIGHTED}
       className={cn(
         "bg-popover text-popover-foreground flex h-full w-full flex-col overflow-hidden rounded-md",
         className
