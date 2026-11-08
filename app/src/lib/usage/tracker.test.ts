@@ -38,6 +38,9 @@ const flush = () => tracker.flush();
 const sessions = () => prisma.printSession.findMany({ orderBy: { createdAt: 'asc' }, include: { deductions: true } });
 const usageLogs = async () => (await prisma.activityLog.findMany({ where: { type: 'spool_usage' } })).map(l => JSON.parse(l.details!));
 const attention = async () => (await sessions()).map(s => s.attention).filter(Boolean).join(' ');
+/** What the activity log says about prints starting and ending with nothing deducted, sorted. */
+const printLogs = async () =>
+  (await prisma.activityLog.findMany({ where: { type: { in: ['print_started', 'print_ended'] } } })).map(l => l.message).sort();
 const cm = (mm: number) => mm / 10;
 
 beforeEach(async () => {
@@ -64,6 +67,7 @@ describe('Bambu', () => {
     expect(spoolman.used(1)).toBe(100);
     expect(await usageLogs()).toMatchObject([{ spoolId: 1, usedWeight: 100 }]);
     expect((await sessions())[0]).toMatchObject({ outcome: 'finished', settled: true, name: 'benchy', attention: null });
+    expect(await printLogs()).toEqual(['Print started: "benchy" on X1C']);
   });
 
   it('keeps Spoolman current during the print', async () => {
@@ -649,12 +653,16 @@ describe('Bambu', () => {
     expect(spoolman.used(1)).toBe(30);
   });
 
-  it('keeps no record of a print cancelled before it ran', async () => {
+  it('keeps no record of a print cancelled before it ran, but logs that it used nothing', async () => {
     ha.set(X1.status, 'prepare');
     ha.tick(10_000); await flush();
     ha.set(X1.status, 'failed');
     ha.tick(1000); await flush();
     expect(await sessions()).toEqual([]);
+    expect(await printLogs()).toEqual([
+      'Nothing deducted for a print on X1C: it ended without using any filament.',
+      'Print started on X1C',
+    ]);
   });
 });
 
@@ -857,6 +865,10 @@ describe('Bambu warming up', () => {
     await bambuPrint(ha, flush, { name: 'swatch', plate: 60, tray: 1, warmup: 40, endAt: 30, outcome: 'failed' });
     expect(spoolman.used(1)).toBe(0);
     expect(await sessions()).toMatchObject([{ outcome: 'failed', settled: true, attention: null, deductions: [] }]);
+    expect(await printLogs()).toEqual([
+      'Nothing deducted for "swatch" on X1C: it stopped before the printer began printing.',
+      'Print started: "swatch" on X1C',
+    ]);
   });
 
   it('keeps the plate of a job cancelled while preparing for a reprint that writes none, across a restart', async () => {
@@ -944,6 +956,7 @@ describe('Bambu warming up', () => {
     ha.tick(1000); await flush();
     // When it began printing is not known, so the progress counts from 0 as it always has.
     expect(spoolman.used(1)).toBe(42);
+    expect(await printLogs()).toEqual(['Print found already under way: "swatch" on X1C']);
   });
 
   it('bills a job resumed after power loss for the rest of its printing', async () => {

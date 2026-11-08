@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
+import { RefreshCw } from 'lucide-react';
 
 interface ActivityLog {
   id: string;
@@ -48,6 +49,7 @@ export default function LogsPage() {
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [pagination, setPagination] = useState<Pagination | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [connected, setConnected] = useState(false);
   const [filter, setFilter] = useState<FilterType>('all');
   const [page, setPage] = useState(1);
@@ -63,10 +65,12 @@ export default function LogsPage() {
   const [deleteAdjustSpoolman, setDeleteAdjustSpoolman] = useState(false);
   const [mutating, setMutating] = useState(false);
 
-  const fetchLogs = useCallback(async (pageNum: number = page, filterType: FilterType = filter, limit: number = pageSize) => {
+  /** Load a page of logs; false, keeping what is shown, if they could not be loaded. */
+  const fetchLogs = useCallback(async (pageNum: number = page, filterType: FilterType = filter, limit: number = pageSize): Promise<boolean> => {
     try {
       setLoading(true);
       const res = await fetch(`/api/logs?page=${pageNum}&limit=${limit}&filter=${filterType}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const fetchedLogs = data.logs || [];
       setLogs(fetchedLogs);
@@ -74,12 +78,23 @@ export default function LogsPage() {
 
       // Update seen IDs ref for duplicate detection in SSE
       seenLogIdsRef.current = new Set(fetchedLogs.map((log: ActivityLog) => log.id));
+      return true;
     } catch (err) {
       console.error('Failed to fetch logs:', err);
+      return false;
     } finally {
       setLoading(false);
     }
   }, [page, filter, pageSize]);
+
+  // The reload is often too quick to see, so the button spins and then says how it went.
+  const refresh = async () => {
+    setRefreshing(true);
+    const ok = await fetchLogs(page, filter, pageSize);
+    setRefreshing(false);
+    if (ok) toast.success('Logs refreshed');
+    else toast.error('Could not load the logs. Try again in a moment.');
+  };
 
   useEffect(() => {
     fetchLogs(page, filter, pageSize);
@@ -249,6 +264,8 @@ export default function LogsPage() {
       case 'connection':
         return 'secondary';
       case 'webhook':
+      case 'print_started':
+      case 'print_ended':
         return 'outline';
       default:
         return 'secondary';
@@ -273,6 +290,10 @@ export default function LogsPage() {
         return 'Tag Stored';
       case 'usage_attention':
         return 'Check Usage';
+      case 'print_started':
+        return 'Print Started';
+      case 'print_ended':
+        return 'Print Ended';
       case 'error':
         return 'Error';
       case 'connection':
@@ -404,8 +425,9 @@ export default function LogsPage() {
               </span>
             )}
           </div>
-          <Button variant="outline" onClick={() => fetchLogs(page, filter)} disabled={loading} className="w-auto self-start sm:self-auto">
-            {loading ? 'Loading...' : 'Refresh'}
+          <Button variant="outline" onClick={refresh} disabled={refreshing} className="w-auto self-start sm:self-auto">
+            <RefreshCw className={refreshing ? 'animate-spin' : undefined} />
+            Refresh
           </Button>
         </div>
 

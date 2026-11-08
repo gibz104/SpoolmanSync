@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Filament usage is tracked inside SpoolmanSync instead of by generated Home Assistant YAML (#83). SpoolmanSync follows each printer's entities in Home Assistant and keeps a record of every print: what each tray used, and what was written to Spoolman. Spoolman is updated as the print runs, and a finished Bambu Lab print is settled to the slicer's per-tray figures. Each print is listed under **Reports → Recent Prints**. The generated automations now only report tray changes.
+- The Logs page shows each print SpoolmanSync picks up, and says why nothing was deducted for one that used no filament, such as a print cancelled while the printer was still preparing.
 
 ### Fixed
 - A print is no longer over- or under-charged around a Home Assistant restart (#83). The old usage meter banked every reading it saw, so the plate weight and progress Home Assistant re-publishes when it starts were counted as filament: measured at 100 g charged for a 60 g print. A Bambu Lab print now only counts the plate weight and progress its printer reports during that print, and a failed print followed by another no longer carries the old progress into the new one.

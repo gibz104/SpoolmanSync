@@ -257,6 +257,11 @@ export class UsageTracker {
       });
       open = { id: row.id, state: step.session, saved: state, savedAt: this.deps.now(), savedMilestones: milestones(step.session) };
       this.open.set(prefix, open);
+      await createActivityLog({
+        type: 'print_started',
+        message: `${step.session.sawStart ? 'Print started' : 'Print found already under way'}${row.name ? `: "${row.name}"` : ''} on ${watch.name}`,
+        details: { printer: prefix, sessionId: row.id },
+      });
     } else {
       open.state = step.session;
       await this.save(open);
@@ -317,11 +322,18 @@ export class UsageTracker {
     if (!outcome?.complete) await this.addAttention(id, ['Spoolman could not be reached for a day, so this print\'s remaining usage was not deducted.']);
 
     const session = await prisma.printSession.update({ where: { id }, data: { settled: true }, include: { deductions: true } });
-    // One stopped while the printer prepared is kept: it shows the stop was seen,
-    // and a reprint of the job that writes no plate weight needs this one's.
-    const stoppedPreparing = (JSON.parse(session.state) as SessionState).printingFrom === null;
-    if (session.deductions.length === 0 && !session.attention && !stoppedPreparing) {
-      await prisma.printSession.delete({ where: { id } });
+    if (session.deductions.length === 0 && !session.attention) {
+      // The log said it started, so it says why nothing was deducted.
+      const stoppedPreparing = (JSON.parse(session.state) as SessionState).printingFrom === null;
+      await createActivityLog({
+        type: 'print_ended',
+        message: `Nothing deducted for ${session.name ? `"${session.name}"` : 'a print'} on ${watch?.name ?? session.printer}: `
+          + (stoppedPreparing ? 'it stopped before the printer began printing.' : 'it ended without using any filament.'),
+        details: { printer: session.printer, outcome: session.outcome },
+      });
+      // One stopped while the printer prepared stays in Recent Prints, showing the
+      // stop was seen; a reprint of the job that writes no plate weight needs it too.
+      if (!stoppedPreparing) await prisma.printSession.delete({ where: { id } });
       return;
     }
     const bySpool = new Map<number, { grams: number; trayKey: string }>();
