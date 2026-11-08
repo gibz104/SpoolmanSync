@@ -5,35 +5,25 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-11-08
 
-> Upgrade note: filament usage is now tracked by SpoolmanSync itself, so the Home Assistant helpers, sensors and automation earlier versions generated for it are no longer used. Re-run **Configure Automations** (or, in external mode, replace the SpoolmanSync YAML you added to Home Assistant) and restart Home Assistant. Until you do, their usage reports are ignored, so nothing is deducted twice. Once they are gone, SpoolmanSync removes the leftover entities from Home Assistant by itself. Run one SpoolmanSync per Home Assistant and Spoolman: every install connected to them now deducts usage, so a second one (a test install beside your usual one, say) deducts each print again.
+> Upgrade note: filament usage is now tracked by SpoolmanSync itself. After updating, re-run **Configure Automations** (in external mode, replace the SpoolmanSync YAML in Home Assistant instead) and restart Home Assistant. Until you do, the old usage automations are ignored, so nothing is deducted twice, and once they are gone SpoolmanSync removes their leftover entities itself. Run one SpoolmanSync per Home Assistant and Spoolman, since every install connected to them now deducts usage.
 
 ### Changed
-- Filament usage is tracked inside SpoolmanSync instead of by generated Home Assistant YAML (#83). SpoolmanSync follows each printer's entities in Home Assistant and keeps a record of every print: what each tray used, and what was written to Spoolman. Spoolman is updated as the print runs, and a finished Bambu Lab print is settled to the slicer's per-tray figures. Each print is listed under **Reports → Recent Prints**. The generated automations now only report tray changes.
-- The Logs page shows each print SpoolmanSync picks up, and says why nothing was deducted for one that used no filament, such as a print cancelled while the printer was still preparing.
+- Filament usage is tracked inside SpoolmanSync instead of by generated Home Assistant YAML (#83). Spoolman is updated as each print runs, and a finished Bambu Lab print is settled to the slicer's per-tray figures, purge and prime tower included. Every print is listed under **Reports → Recent Prints** with what it deducted, and the Logs page shows each print as it starts. The generated automations now only report tray changes.
+- Bambu Lab usage counts from when the printer starts printing. Heating, levelling and calibrating move the progress but use next to no filament, so a print cancelled during them is not charged, and one cancelled part way is charged for its share of the printing.
+- Settings puts the Spoolman card right under Home Assistant and explains the Dashboard Display options in tooltips. Dashboard tray cards are all one height, and the dashboard and Logs Refresh buttons show that they worked.
 
 ### Fixed
-- A print is no longer over- or under-charged around a Home Assistant restart (#83). The old usage meter banked every reading it saw, so the plate weight and progress Home Assistant re-publishes when it starts were counted as filament: measured at 100 g charged for a 60 g print. A Bambu Lab print now only counts the plate weight and progress its printer reports during that print, and a failed print followed by another no longer carries the old progress into the new one.
-- Usage is no longer lost while Spoolman is unreachable. What a print owes is kept and written once Spoolman is back. A deduction Spoolman may or may not have received (a timeout) is never sent twice; the print is flagged so you can check that spool.
-- Anything that cannot be accounted for (a print whose weight was never reported, a tray with no spool assigned) is flagged on the print and in the Logs instead of being dropped.
-- A Bambu Lab print whose weight Home Assistant never updates is flagged for you to deduct by hand, instead of being charged the previous print's weight (#90). When ha-bambulab cannot find a print's file, it keeps showing the last print's weight: the old usage meter charged a 69 g print the 2.6 g of the print before it.
-- A Creality print is charged to the CFS slot that actually fed it: ha_creality_ws re-reads the active slot only every five minutes, so SpoolmanSync now asks for it as a print starts and every 15 seconds while it runs, which also splits a multi-colour print between its slots. Lengths are converted with the density and diameter Spoolman records for the spool's filament.
-- A Bambu Lab job the printer resumes after it already reported the print failed or idle (power-loss recovery) is charged only for the rest of the job, not again from 0%.
-- A Bambu Lab print cancelled while the printer is still heating, levelling or calibrating is no longer charged. That routine moves the print's progress, since the slicer counts it in its time estimate (40% of a small print's on an X1C), but uses next to no filament. Usage now counts from when the printer starts printing, so a print cancelled part way is charged for its share of the printing.
-- A Bambu Lab print mixing AMS trays and the external spool is settled to the slicer's figures for the AMS trays, with the rest of the plate going to the external spool, which ha-bambulab leaves out of its per-tray figures.
-- A Creality print is no longer recorded twice when the printer reports it complete a second early, and one resumed after a power loss is charged once whether or not its length counter starts over.
-- A print with skipped objects is flagged, since the plate weight it is charged still includes them, as is a tray with more than one spool assigned to it (an edit made in Spoolman).
-- A print that ran from start to finish while SpoolmanSync (or its connection to Home Assistant) was down is listed under **Recent Prints** as not seen, with a note to deduct it in Spoolman, instead of leaving no trace.
-- A printer just added or shown again in SpoolmanSync is tracked at once, and reconnecting or disconnecting Home Assistant in Settings takes effect immediately rather than at the next reconnect.
-- Auto-configure no longer deletes configuration you added below SpoolmanSync's block in configuration.yaml, and in embedded mode it writes a package file instead of top-level keys that could shadow your own.
-- The tray-change automation for printers without an AMS or CFS no longer fails to load, and a filament name containing a double quote no longer breaks the tray-change webhook.
-- Creality printers whose Home Assistant entity ids carry a `_2` (or higher) suffix are now discovered.
-- A spool assigned before its tray's entity was renamed in Home Assistant is no longer re-pointed at another AMS's or printer's tray.
-- In the add-on, nested pages (such as a scanned spool's page) load their styles and scripts through the sidebar again, and setting the add-on's port to the ingress port no longer breaks both ports.
-- A database upgrade interrupted part way (for example by a full disk) is retried on the next start instead of blocking every later update.
-- The embedded image's update of ha-bambulab and ha_creality_ws can no longer leave Home Assistant without the integration if it is interrupted.
-- Requests to Spoolman time out instead of hanging, and two webhook secrets can no longer be issued at once.
+- A Home Assistant restart, a printer dropout or a failed print no longer over- or under-charges a print (#83): only readings the printer reports during the print count. Usage owed while Spoolman is unreachable is written once it is back, and a deduction Spoolman may have missed (a timeout) is flagged rather than sent twice.
+- Anything SpoolmanSync cannot account for is flagged on the print and in the Logs instead of guessed: a weight Home Assistant never reported (#90, where the old meter charged the previous print's weight), a tray with no spool or several, skipped objects, and a print that ran while SpoolmanSync was down.
+- Bambu Lab: a job resumed after power loss is charged only for the rest of it, and a print mixing AMS trays with the external spool gives the external spool the part the slicer's figures leave out.
+- Creality: usage is charged to the CFS slot that fed it and converted with the spool's density and diameter, a job is counted once when the printer reports it complete early or resumes it after a power loss, and printers whose entity ids end in `_2` (or higher) are discovered.
+- Auto-configure no longer deletes configuration below its block in configuration.yaml or, in embedded mode, shadows your own keys. The tray-change automation loads for printers without an AMS or CFS, and a filament name with a double quote no longer breaks it.
+- A spool assigned before its tray's entity was renamed is no longer moved to another AMS's or printer's tray, and a printer added or a Home Assistant connection changed in Settings takes effect at once.
+- In the add-on, nested pages load through the sidebar again, and the add-on's port can no longer collide with the ingress port.
+- A database upgrade interrupted part way is retried on the next start, and an interrupted update of the embedded image's integrations keeps the installed ones.
+- Requests to Spoolman time out instead of hanging, two webhook secrets can no longer be issued at once, and the Scan page opens at the top.
 
 ## [1.6.14] - 2026-10-02
 
