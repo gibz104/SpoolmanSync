@@ -89,6 +89,8 @@ export class EntitySubscription {
   private backoff = 1_000;
   private timers: NodeJS.Timeout[] = [];
   private reconnectTimer: NodeJS.Timeout | null = null;
+  /** Counts connects and stops, so a connect that a newer one or stop() overtook gives up. */
+  private attempt = 0;
   private refusedToken: string | null = null;
   private refusals = 0;
   private stopped = true;
@@ -107,8 +109,13 @@ export class EntitySubscription {
 
   stop(): void {
     this.stopped = true;
+    this.attempt++;
     this.teardown();
+    // Forgotten as well as cleared: reconnect() takes a timer that is still set
+    // for a retry already on its way, so after a reconnect from Settings the
+    // next dropped connection (HA restarting) was never retried.
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
   }
 
   /** Watch exactly these entities, resubscribing on the open connection if the set changed. */
@@ -160,13 +167,17 @@ export class EntitySubscription {
   }
 
   private async connect(): Promise<void> {
+    const attempt = ++this.attempt;
     let target: { url: string; token: string } | null = null;
     try {
       target = await this.opts.connect();
     } catch (err) {
+      if (attempt !== this.attempt) return;
       return this.reconnect(`cannot reach Home Assistant: ${err instanceof Error ? err.message : String(err)}`);
     }
-    if (this.stopped) return;
+    // Stopped, or restarted (a reconnect from Settings) while this one waited:
+    // going on would open a second socket next to the newer one's.
+    if (this.stopped || attempt !== this.attempt) return;
     if (!target) return this.reconnect('Home Assistant is not connected yet');
     if (target.token === this.refusedToken && this.refusals >= MAX_AUTH_FAILURES) {
       return this.reconnect('Home Assistant refused the access token; reconnect Home Assistant in Settings');
