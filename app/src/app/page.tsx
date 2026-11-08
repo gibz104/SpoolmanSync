@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { toast } from 'sonner';
+import { RefreshCw } from 'lucide-react';
 import type { HAPrinter } from '@/lib/api/homeassistant';
 import type { Spool } from '@/lib/api/spoolman';
 import type { ActiveAlert } from '@/lib/alerts';
@@ -51,6 +52,7 @@ export default function Dashboard() {
   const [automationsStale, setAutomationsStale] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Track trays that have filament loaded but no spool assigned
   // Returns list with tray label and AMS-reported filament info
@@ -85,7 +87,8 @@ export default function Dashboard() {
     return trays;
   }, [printers]);
 
-  const fetchData = useCallback(async () => {
+  /** Load everything the dashboard shows; false if any of it could not be loaded. */
+  const fetchData = useCallback(async (): Promise<boolean> => {
     try {
       // Fetch settings first
       const settingsRes = await fetch('/api/settings');
@@ -115,13 +118,26 @@ export default function Dashboard() {
           const alertsData = await alertsRes.json();
           setLowFilamentAlerts(alertsData.alerts || []);
         }
+
+        return printersRes.ok && spoolsRes.ok && alertsRes.ok;
       }
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data');
+      return false;
     } finally {
       setLoading(false);
     }
   }, []);
+
+  // The reload is often too quick to see, so the button spins and then says how it went.
+  const refresh = async () => {
+    setRefreshing(true);
+    const ok = await fetchData();
+    setRefreshing(false);
+    if (ok) toast.success('Dashboard refreshed');
+    else toast.error('Could not refresh everything. Check the connections in Settings.');
+  };
 
   useEffect(() => {
     fetchData();
@@ -333,7 +349,8 @@ export default function Dashboard() {
       <main className="w-full max-w-7xl mx-auto py-6 px-3 sm:px-4 md:px-6">
         <div className="mb-4 sm:mb-6 flex items-center justify-between gap-2">
           <h1 className="text-xl sm:text-2xl font-bold">Dashboard</h1>
-          <Button variant="outline" size="sm" onClick={fetchData}>
+          <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
+            <RefreshCw className={refreshing ? 'animate-spin' : undefined} />
             Refresh
           </Button>
         </div>

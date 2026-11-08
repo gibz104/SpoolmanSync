@@ -102,6 +102,17 @@ function sortSpools(spools: Spool[], sortBy: SortBy): Spool[] {
   });
 }
 
+/** Stands in for a spool in an empty slot's invisible copy of a filled card. */
+const PLACEHOLDER_SPOOL = {
+  id: 0,
+  remaining_weight: 0,
+  location: null,
+  filament: {
+    name: 'Placeholder', material: 'PLA', vendor: null,
+    color_hex: null, multi_color_hexes: null, multi_color_direction: null,
+  },
+} as unknown as Spool;
+
 export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mismatch, showLocation }: TraySlotProps) {
   const [open, setOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string | null>>({});
@@ -162,10 +173,52 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
     return sortSpools(filtered, sortBy);
   }, [spools, filters, sortBy]);
 
-  // Only show weight from Spoolman when a spool is assigned
-  const displayWeight = assignedSpool?.remaining_weight;
-  // Only show weight if spool is assigned and weight is a valid positive number
-  const showWeight = assignedSpool && typeof displayWeight === 'number' && displayWeight >= 0;
+  // A spool's details. Each row is one height whatever the spool, so every
+  // filled card is as tall as the next.
+  const spoolDetails = (spool: Spool) => {
+    const weight = spool.remaining_weight;
+    return (
+      <>
+        {/* Main content: color circle + filament name, with room for two lines either way */}
+        <div className="flex min-h-9 items-center gap-2 mb-2">
+          <SpoolColorSwatch filament={spool.filament} />
+          <p className="text-sm font-semibold leading-tight line-clamp-2 [hyphens:none]" title={spool.filament.name || spool.filament.material}>
+            {spool.filament.name || spool.filament.material}
+          </p>
+        </div>
+
+        {/* Info: material and vendor stacked, each on one line */}
+        <div className="space-y-1 mb-2 flex-1">
+          <div className="flex items-baseline gap-1">
+            <span className="shrink-0 text-[9px] font-medium text-muted-foreground uppercase">Material:</span>
+            <span className="min-w-0 text-xs font-medium truncate">{spool.filament.material}</span>
+          </div>
+          <div className="flex items-baseline gap-1">
+            <span className="shrink-0 text-[9px] font-medium text-muted-foreground uppercase">Vendor:</span>
+            <span className="min-w-0 text-xs font-medium truncate">{spool.filament.vendor?.name || 'Unknown'}</span>
+          </div>
+          {showLocation && (
+            <div className="flex items-baseline gap-1">
+              <span className="shrink-0 text-[9px] font-medium text-muted-foreground uppercase">Location:</span>
+              <span className="min-w-0 text-xs font-medium truncate">{spool.location || '—'}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Footer: spool ID and weight (only a valid, non-negative weight) */}
+        <div className="flex h-5 items-center justify-between mt-auto pt-1">
+          <span className="text-[10px] text-muted-foreground">
+            #{spool.id}
+          </span>
+          {typeof weight === 'number' && weight >= 0 && (
+            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 whitespace-nowrap">
+              {Math.round(weight)}g<span className="hidden min-[320px]:inline"> Remaining</span>
+            </Badge>
+          )}
+        </div>
+      </>
+    );
+  };
 
   const handleUnassign = (e: React.MouseEvent | React.KeyboardEvent) => {
     e.stopPropagation(); // Prevent opening the dialog
@@ -189,83 +242,55 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <div className="relative">
+      {/* h-full on both: the grid stretches this wrapper to the row's tallest
+          card, and the button fills it, so every card in a row is one height. */}
+      <div className="relative h-full">
       <DialogTrigger asChild>
         <button
-          className="relative flex w-full flex-col rounded-lg border-2 border-border p-3 transition-colors hover:border-primary hover:bg-accent text-left min-h-[120px] md:min-h-[140px]"
+          className="@container relative flex h-full w-full flex-col rounded-lg border-2 border-border p-3 transition-colors hover:border-primary hover:bg-accent text-left"
         >
-          {/* Header row with tray label (unassign control is an overlay sibling) */}
-          <div className="flex items-center justify-between w-full mb-2">
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+          {/* Header row: tray label, with any mismatch warning beside it rather
+              than in a row of its own, which would make this card taller than
+              the rest. The unassign control overlays the right end. */}
+          <div className="flex h-5 w-full min-w-0 items-center gap-1.5 mb-2 pr-6">
+            <span className="shrink-0 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
               {trayLabel}
             </span>
+            {mismatch && assignedSpool && (
+              <span
+                className="flex min-w-0 items-center gap-1 px-1.5 py-px rounded bg-amber-100 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700"
+                title={`RFID: ${mismatch.printerReports.color} (${mismatch.printerReports.material}) | Assigned: ${mismatch.spoolmanHas.color} (${mismatch.spoolmanHas.material})`}
+              >
+                <span aria-hidden className="text-amber-600 dark:text-amber-400 text-[10px]">⚠️</span>
+                <span className="sr-only">Possible wrong spool</span>
+                {/* Only on a card wide enough for it beside the tray label; a narrow one shows the icon alone */}
+                <span aria-hidden className="hidden @[11rem]:inline text-[10px] font-medium text-amber-700 dark:text-amber-300 truncate">
+                  Wrong spool?
+                </span>
+              </span>
+            )}
           </div>
 
-          {/* Mismatch warning banner */}
-          {mismatch && assignedSpool && (
-            <div
-              className="flex items-center gap-1.5 px-2 py-1 mb-2 rounded bg-amber-100 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700"
-              title={`RFID: ${mismatch.printerReports.color} (${mismatch.printerReports.material}) | Assigned: ${mismatch.spoolmanHas.color} (${mismatch.spoolmanHas.material})`}
-            >
-              <span className="text-amber-600 dark:text-amber-400 text-xs">⚠️</span>
-              <span className="text-[10px] font-medium text-amber-700 dark:text-amber-300 truncate">
-                Possible wrong spool
-              </span>
-            </div>
-          )}
-
           {assignedSpool ? (
-            <>
-              {/* Main content: color circle + filament name */}
-              <div className="flex items-center gap-2 mb-2">
-                <SpoolColorSwatch filament={assignedSpool.filament} />
-                <p className="text-sm font-semibold leading-tight line-clamp-2 [hyphens:none]" title={assignedSpool.filament.name || assignedSpool.filament.material}>
-                  {assignedSpool.filament.name || assignedSpool.filament.material}
+            spoolDetails(assignedSpool)
+          ) : (
+            /* Empty tray: an invisible filled card underneath sets the height, so
+               an empty slot is exactly as tall as a filled one. */
+            <div className="grid flex-1">
+              <div aria-hidden className="invisible flex flex-col [grid-area:1/1]">
+                {spoolDetails(PLACEHOLDER_SPOOL)}
+              </div>
+              <div className="flex flex-col items-center justify-center [grid-area:1/1]">
+                <div
+                  className="h-8 w-8 rounded-full border-2 border-dashed border-muted-foreground/30 mb-2"
+                />
+                <p className="text-xs text-muted-foreground">
+                  No spool assigned
+                </p>
+                <p className="text-[10px] text-blue-500 dark:text-blue-400 mt-1">
+                  Click to assign
                 </p>
               </div>
-
-              {/* Info: material and vendor stacked */}
-              <div className="space-y-1 mb-2 flex-1">
-                <div className="flex items-baseline gap-1">
-                  <span className="text-[9px] font-medium text-muted-foreground uppercase">Material:</span>
-                  <span className="text-xs font-medium">{assignedSpool.filament.material}</span>
-                </div>
-                <div className="flex items-baseline gap-1">
-                  <span className="text-[9px] font-medium text-muted-foreground uppercase">Vendor:</span>
-                  <span className="text-xs font-medium truncate">{assignedSpool.filament.vendor?.name || 'Unknown'}</span>
-                </div>
-                {showLocation && assignedSpool.location && (
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-[9px] font-medium text-muted-foreground uppercase">Location:</span>
-                    <span className="text-xs font-medium truncate">{assignedSpool.location}</span>
-                  </div>
-                )}
-              </div>
-
-              {/* Footer: spool ID and weight */}
-              <div className="flex items-center justify-between mt-auto pt-1">
-                <span className="text-[10px] text-muted-foreground">
-                  #{assignedSpool.id}
-                </span>
-                {showWeight && (
-                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 whitespace-nowrap">
-                    {Math.round(displayWeight)}g<span className="hidden min-[320px]:inline"> Remaining</span>
-                  </Badge>
-                )}
-              </div>
-            </>
-          ) : (
-            /* Empty tray state */
-            <div className="flex flex-col items-center justify-center flex-1 py-2">
-              <div
-                className="h-8 w-8 rounded-full border-2 border-dashed border-muted-foreground/30 mb-2"
-              />
-              <p className="text-xs text-muted-foreground">
-                No spool assigned
-              </p>
-              <p className="text-[10px] text-blue-500 dark:text-blue-400 mt-1">
-                Click to assign
-              </p>
             </div>
           )}
         </button>
