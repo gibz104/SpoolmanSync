@@ -13,6 +13,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { AddPrinterDialog } from '@/components/add-printer-dialog';
+import { LabelWithHint } from '@/components/label-with-hint';
 import type { AlertConfig, ActiveAlert, AvailableGroup } from '@/lib/alerts';
 
 interface FilterField {
@@ -1025,6 +1026,38 @@ function SettingsContent() {
 
           <Separator />
 
+          {/* Spoolman Settings */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <div className={`h-3 w-3 rounded-full ${settings?.spoolman ? 'bg-green-500' : 'bg-gray-300'}`} />
+                <CardTitle>Spoolman</CardTitle>
+              </div>
+              <CardDescription>
+                Connect to your Spoolman instance to manage filament spools.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="spoolman-url">Spoolman URL</Label>
+                <Input
+                  id="spoolman-url"
+                  placeholder="http://localhost:7912"
+                  value={spoolmanUrl}
+                  onChange={(e) => setSpoolmanUrl(e.target.value)}
+                />
+              </div>
+              <Button
+                onClick={saveSpoolmanSettings}
+                disabled={saving === 'spoolman' || !spoolmanUrl}
+              >
+                {saving === 'spoolman' ? 'Connecting...' : settings?.spoolman ? 'Update Connection' : 'Connect'}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Separator />
+
           {/* Bambu Lab Printers */}
           {settings?.homeassistant?.connected && (
             <Card>
@@ -1194,8 +1227,10 @@ function SettingsContent() {
                 {/* Create new virtual printer */}
                 <div className="pt-3 border-t space-y-3">
                   <p className="text-sm font-medium">Add a virtual printer</p>
-                  <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
-                    <div className="flex-1 space-y-1">
+                  {/* The tip sits on its own row (under Name) so it can't push the
+                      Name box out of line with the Slots box and the button. */}
+                  <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+                    <div className="space-y-1">
                       <Label htmlFor="new-vp-name">Name</Label>
                       <Input
                         id="new-vp-name"
@@ -1207,18 +1242,6 @@ function SettingsContent() {
                         }}
                         list="existing-spoolman-locations"
                       />
-                      {existingLocations.length > 0 && (
-                        <datalist id="existing-spoolman-locations">
-                          {existingLocations.map((loc) => (
-                            <option key={loc} value={loc} />
-                          ))}
-                        </datalist>
-                      )}
-                      {existingLocations.length > 0 && (
-                        <p className="text-xs text-muted-foreground">
-                          Tip: pick an existing Spoolman location to keep names in sync.
-                        </p>
-                      )}
                     </div>
                     <div className="space-y-1">
                       <Label htmlFor="new-vp-slots">Slots</Label>
@@ -1241,41 +1264,23 @@ function SettingsContent() {
                     >
                       {creatingVp ? 'Creating...' : 'Create'}
                     </Button>
+                    {existingLocations.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Tip: pick an existing Spoolman location to keep names in sync.
+                      </p>
+                    )}
+                    {/* Out of the Name column: as its last child, this hidden list
+                        gave the Name box space-y's bottom margin, lifting it out of line. */}
+                    {existingLocations.length > 0 && (
+                      <datalist id="existing-spoolman-locations">
+                        {existingLocations.map((loc) => (
+                          <option key={loc} value={loc} />
+                        ))}
+                      </datalist>
+                    )}
                   </div>
                 </div>
               </div>
-            </CardContent>
-          </Card>
-
-          <Separator />
-
-          {/* Spoolman Settings */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <div className={`h-3 w-3 rounded-full ${settings?.spoolman ? 'bg-green-500' : 'bg-gray-300'}`} />
-                <CardTitle>Spoolman</CardTitle>
-              </div>
-              <CardDescription>
-                Connect to your Spoolman instance to manage filament spools.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="spoolman-url">Spoolman URL</Label>
-                <Input
-                  id="spoolman-url"
-                  placeholder="http://localhost:7912"
-                  value={spoolmanUrl}
-                  onChange={(e) => setSpoolmanUrl(e.target.value)}
-                />
-              </div>
-              <Button
-                onClick={saveSpoolmanSettings}
-                disabled={saving === 'spoolman' || !spoolmanUrl}
-              >
-                {saving === 'spoolman' ? 'Connecting...' : settings?.spoolman ? 'Update Connection' : 'Connect'}
-              </Button>
             </CardContent>
           </Card>
 
@@ -1290,7 +1295,7 @@ function SettingsContent() {
                     Configure what information is shown on the dashboard spool cards.
                   </CardDescription>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-4">
                   <div className="flex items-center space-x-3">
                     <Checkbox
                       id="show-spool-location"
@@ -1312,14 +1317,12 @@ function SettingsContent() {
                         }
                       }}
                     />
-                    <div>
-                      <Label htmlFor="show-spool-location" className="text-sm font-medium cursor-pointer">
-                        Show spool location
-                      </Label>
-                      <p className="text-xs text-muted-foreground">
-                        Display the Spoolman location field on each spool card (e.g., shelf, dry box, bin number)
-                      </p>
-                    </div>
+                    <LabelWithHint
+                      htmlFor="show-spool-location"
+                      hint="Display the Spoolman location field on each spool card (e.g., shelf, dry box, bin number)."
+                    >
+                      Show spool location
+                    </LabelWithHint>
                   </div>
 
                   <div className="flex items-center space-x-3">
@@ -1343,14 +1346,12 @@ function SettingsContent() {
                         }
                       }}
                     />
-                    <div>
-                      <Label htmlFor="never-auto-clear-tray" className="text-sm font-medium cursor-pointer">
-                        Never auto-clear tray assignments
-                      </Label>
-                      <p className="text-xs text-muted-foreground">
-                        When enabled, SpoolmanSync will not remove a spool from a tray when the printer briefly reports it empty. Useful for LAN-only setups where the AMS occasionally reports false empty states.
-                      </p>
-                    </div>
+                    <LabelWithHint
+                      htmlFor="never-auto-clear-tray"
+                      hint="When enabled, SpoolmanSync will not remove a spool from a tray when the printer briefly reports it empty. Useful for LAN-only setups where the AMS occasionally reports false empty states."
+                    >
+                      Never auto-clear tray assignments
+                    </LabelWithHint>
                   </div>
 
                   <div className="flex items-center space-x-3">
@@ -1374,14 +1375,12 @@ function SettingsContent() {
                         }
                       }}
                     />
-                    <div>
-                      <Label htmlFor="ignore-color-mismatch" className="text-sm font-medium cursor-pointer">
-                        Ignore color in spool mismatch warnings
-                      </Label>
-                      <p className="text-xs text-muted-foreground">
-                        The &quot;possible wrong spool&quot; warning compares material only. Useful when your RFID tags report a color the physical spool doesn&apos;t have, which is common with third-party Creality tags.
-                      </p>
-                    </div>
+                    <LabelWithHint
+                      htmlFor="ignore-color-mismatch"
+                      hint={'The "possible wrong spool" warning compares material only. Useful when your RFID tags report a color the physical spool doesn\'t have, which is common with third-party Creality tags.'}
+                    >
+                      Ignore color in spool mismatch warnings
+                    </LabelWithHint>
                   </div>
 
                   <div className="flex items-center space-x-3">
@@ -1405,14 +1404,12 @@ function SettingsContent() {
                         }
                       }}
                     />
-                    <div>
-                      <Label htmlFor="sync-spoolman-location" className="text-sm font-medium cursor-pointer">
-                        Sync spool locations to Spoolman
-                      </Label>
-                      <p className="text-xs text-muted-foreground">
-                        When enabled, assigning a spool to a tray writes Spoolman&apos;s native location field — real printers as &quot;Printer - AMS 1 Tray 3&quot; by default and virtual printers as their name — so Spoolman reporting shows where every spool is (in a printer or in storage). Only spools you assign/unassign are affected; a location you set by hand is left alone. Applies to future assignments (existing ones update as spools are re-assigned).
-                      </p>
-                    </div>
+                    <LabelWithHint
+                      htmlFor="sync-spoolman-location"
+                      hint={'When enabled, assigning a spool to a tray writes Spoolman\'s native location field — real printers as "Printer - AMS 1 Tray 3" by default and virtual printers as their name — so Spoolman reporting shows where every spool is (in a printer or in storage). Only spools you assign/unassign are affected; a location you set by hand is left alone. Applies to future assignments (existing ones update as spools are re-assigned).'}
+                    >
+                      Sync spool locations to Spoolman
+                    </LabelWithHint>
                   </div>
 
                   {/* Label detail — like the holding pen below, this only means
@@ -1420,9 +1417,12 @@ function SettingsContent() {
                       location otherwise. */}
                   {syncSpoolmanLocation && (
                     <div className="ml-7 space-y-2">
-                      <Label htmlFor="location-granularity" className="text-sm font-medium">
+                      <LabelWithHint
+                        htmlFor="location-granularity"
+                        hint="Choose how precise the location is. With AMS unit, every spool in the same AMS shares one location instead of getting its own tray. External spools and printers without an AMS are unaffected either way. Changing this updates the spools SpoolmanSync has already filed, the next time the dashboard loads."
+                      >
                         Location detail
-                      </Label>
+                      </LabelWithHint>
                       <select
                         id="location-granularity"
                         value={locationGranularity}
@@ -1432,12 +1432,6 @@ function SettingsContent() {
                         <option value="tray">Individual tray (Printer - AMS 1 Tray 3)</option>
                         <option value="ams">AMS unit (Printer - AMS 1)</option>
                       </select>
-                      <p className="text-xs text-muted-foreground">
-                        Choose how precise the location is. With AMS unit, every spool in the same
-                        AMS shares one location instead of getting its own tray. External spools and
-                        printers without an AMS are unaffected either way. Changing this updates the
-                        spools SpoolmanSync has already filed, the next time the dashboard loads.
-                      </p>
                     </div>
                   )}
 
@@ -1445,9 +1439,12 @@ function SettingsContent() {
                       it's nested under the toggle and hidden when it's off. */}
                   {syncSpoolmanLocation && (
                     <div className="ml-7 space-y-2">
-                      <Label htmlFor="unassigned-spool-location" className="text-sm font-medium">
+                      <LabelWithHint
+                        htmlFor="unassigned-spool-location"
+                        hint="Optional. When a spool is removed from a tray, park it in this location instead of clearing the field — so it stays visible in Spoolman rather than disappearing until you remember to file it. Leave empty to keep the default behavior of clearing the location. As above, a location you set by hand is never overwritten."
+                      >
                         Location when unassigned
-                      </Label>
+                      </LabelWithHint>
                       <Input
                         id="unassigned-spool-location"
                         value={unassignedSpoolLocation}
@@ -1460,13 +1457,6 @@ function SettingsContent() {
                           if (e.key === 'Enter') e.currentTarget.blur();
                         }}
                       />
-                      <p className="text-xs text-muted-foreground">
-                        Optional. When a spool is removed from a tray, park it in this location
-                        instead of clearing the field — so it stays visible in Spoolman rather than
-                        disappearing until you remember to file it. Leave empty to keep the default
-                        behavior of clearing the location. As above, a location you set by hand is
-                        never overwritten.
-                      </p>
                     </div>
                   )}
                 </CardContent>
