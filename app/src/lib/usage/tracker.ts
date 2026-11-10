@@ -132,6 +132,20 @@ export class UsageTracker {
     this.source.stop();
   }
 
+  /**
+   * Stop for good, as the process is about to exit: let a pass already
+   * running (and the Spoolman write in it) finish, then save every open
+   * print exactly where it is instead of where the last throttled save left it.
+   */
+  async shutdown(): Promise<void> {
+    this.stop();
+    await this.chain;
+    for (const open of this.open.values()) {
+      open.savedAt = -Infinity;
+      await this.save(open).catch(err => console.error('[usage] Could not save a print on shutdown:', err));
+    }
+  }
+
   /** Connect to Home Assistant again, as the stored connection now says. */
   reconnect(): void {
     if (this.stopped) return;

@@ -34,6 +34,8 @@ FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
+# Shutdown is handled in src/instrumentation.ts
+ENV NEXT_MANUAL_SIG_HANDLE=true
 
 # Install runtime dependencies for better-sqlite3
 RUN apk add --no-cache libc6-compat
