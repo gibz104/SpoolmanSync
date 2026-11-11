@@ -6,7 +6,7 @@
 [![Ko-Fi](https://img.shields.io/badge/Ko--fi-Support%20this%20project-ff5f5f?logo=ko-fi)](https://ko-fi.com/gibz104)
 [![GitHub stars](https://img.shields.io/github/stars/gibz104/SpoolmanSync?style=social)](https://github.com/gibz104/SpoolmanSync)
 
-SpoolmanSync is a web app that automatically tracks which filament spools are loaded in your 3D printer's AMS/CFS and keeps [Spoolman](https://github.com/Donkie/Spoolman) inventory in sync, deducting the filament each print uses from the right spool. Works with **Bambu Lab** (X1C, P1S, P2S, A1, H2D, X2D with AMS, AMS 2 Pro, AMS HT, AMS Lite) and **Creality** (K1, K2, K2 Plus, Hi, Ender 3 V3 with CFS) printers, and supports filament from any vendor.
+SpoolmanSync is a web app that automatically tracks which filament spools are loaded in your 3D printer's AMS/CFS and keeps [Spoolman](https://github.com/Donkie/Spoolman) inventory in sync, deducting the filament each print uses from the right spool. Works with **Bambu Lab** (X1C, P1S, P2S, A1, H2D, X2D with AMS, H3C with AMS 3H, AMS 2 Pro, AMS HT, AMS Lite) and **Creality** (K1, K2, K2 Plus, Hi, Ender 3 V3 with CFS) printers, and supports filament from any vendor.
 
 No YAML editing. No Home Assistant expertise required.
 
