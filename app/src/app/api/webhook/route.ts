@@ -9,6 +9,7 @@ import { isValidTrayUuid, classifyTrayState, isActivePrintState } from '@/lib/we
 import { processGlobal } from '@/lib/process-global';
 import { trayCarriesSpoolSerial } from '@/lib/creality';
 import { applyLocationSync } from '@/lib/spool-location';
+import { suggestCandidateSpools } from '@/lib/tag-learning';
 
 /**
  * Webhook endpoint for Home Assistant automations
@@ -295,6 +296,14 @@ export async function POST(request: NextRequest) {
         spools.find(s => s.extra?.['active_tray'] === JSON.stringify(trayUniqueId)) ??
         spools.find(s => s.extra?.['active_tray'] === JSON.stringify(tray_entity_id));
 
+      // A real serial that no spool owns (the lookup above found nothing) is a
+      // spool SpoolmanSync hasn't met yet; it learns serials at assignment or
+      // first print. Suggest likely spools instead of leaving the old one
+      // assigned with nothing to say it is probably stale.
+      const candidates = isValidTrayUuid(tray_uuid) && await traySupportsSerial(tray_entity_id)
+        ? suggestCandidateSpools({ material, color: body.color }, spools)
+        : [];
+
       const taggedSpoolCount = client.countTaggedSpools(spools);
       const serialState = !isValidTrayUuid(tray_uuid)
         ? 'no_serial_reported'
@@ -324,6 +333,7 @@ export async function POST(request: NextRequest) {
           assignedSpoolId: assignedSpool?.id ?? null,
           serialMatch: serialState,
           taggedSpoolCount,
+          candidateSpools: candidates,
           action: assignedSpool ? 'existing_assignment_kept' : 'manual_assignment_required',
         },
       });
@@ -343,6 +353,7 @@ export async function POST(request: NextRequest) {
           : 'No spool is assigned to this tray. Assign a spool in SpoolmanSync to track usage.',
         assignedSpoolId: assignedSpool?.id ?? null,
         serialMatch: serialState,
+        candidateSpools: candidates,
         printerReports: { name, material, tray_uuid },
       });
     }
