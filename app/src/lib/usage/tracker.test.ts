@@ -237,6 +237,31 @@ describe('Bambu', () => {
     expect((await sessions())[0].outcome).toBe('ended');
   });
 
+  it('saves an open print exactly where it is on shutdown', async () => {
+    await bambuPrint(ha, flush, { name: 'benchy', plate: 100, tray: 1, during: pct => pct === 50 });
+    // Progress alone is saved at most every 30 s, so this step is not on disk yet.
+    ha.set(X1.progress, 51);
+    ha.tick(1000); await flush();
+    const savedProgress = async () => JSON.parse((await sessions())[0].state).progress;
+    expect(await savedProgress()).toBeLessThan(51);
+    await tracker.shutdown();
+    expect(await savedProgress()).toBe(51);
+    expect((await sessions())[0].endedAt).toBeNull();
+  });
+
+  it('lets a pass already running finish on shutdown, then takes no more', async () => {
+    await bambuPrint(ha, flush, { name: 'benchy', plate: 100, tray: 1, during: pct => pct === 50 });
+    ha.set(X1.progress, 60);
+    ha.tick(1000);
+    const running = tracker.heartbeat();
+    await tracker.shutdown();
+    expect(spoolman.used(1)).toBe(60);
+    await running;
+    ha.set(X1.progress, 70);
+    ha.tick(1000); await tracker.heartbeat();
+    expect(spoolman.used(1)).toBe(60);
+  });
+
   it('survives Home Assistant restarting mid-print', async () => {
     await bambuPrint(ha, flush, { name: 'benchy', plate: 100, tray: 1, during: pct => pct === 50 });
     // Entities come back unavailable, then re-created before the 3mf is parsed again.
