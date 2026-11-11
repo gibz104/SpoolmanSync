@@ -54,10 +54,26 @@ export function watchFor(printer: HAPrinter): PrinterWatch | null {
   };
 
   for (const ams of printer.ams_units) {
+    // The AMS 3H is a Bambu device named by its display name ("AMS 3H"). It is
+    // recognized only on Bambu printers, never by its numeric id alone: a Creality
+    // CFS box or a generic AMS unit that happens to be numbered 33 must not be
+    // mistaken for it.
+    const ams3h = printer.brand === 'bambu_lab' && ams.name === 'AMS 3H';
     for (const tray of ams.trays) {
       const key = tray.unique_id || tray.entity_id;
       trays.push({ key, entityId: tray.entity_id, label: `${ams.name} ${printer.brand === 'creality' ? 'Slot' : 'Tray'} ${tray.tray_number}`, external: false });
-      name(ams.ams_number >= 128 ? `AMS HT ${ams.ams_number - 127}` : `AMS ${ams.ams_number} Tray ${tray.tray_number}`, key);
+      if (ams3h) {
+        // The slicer's print_weight attributes name the AMS 3H by its display
+        // name ("AMS 3H Tray N"); register that as the primary label. ha-bambulab
+        // also numbers it by index, so "AMS 33 Tray N" is registered as an alias
+        // and the slicer's split is matched either way.
+        name(`${ams.name} Tray ${tray.tray_number}`, key);
+        name(`AMS 33 Tray ${tray.tray_number}`, key);
+      } else if (ams.ams_number >= 128) {
+        name(`AMS HT ${ams.ams_number - 127}`, key);
+      } else {
+        name(`AMS ${ams.ams_number} Tray ${tray.tray_number}`, key);
+      }
     }
   }
   for (const ext of printer.external_spools) {
