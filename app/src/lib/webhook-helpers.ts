@@ -46,7 +46,8 @@ export function filamentWeight(lengthCm: number, filament?: { density?: number; 
  * Classify a printer-reported tray `name` into how the webhook should treat it
  * (issue #65). This is the single guard that decides whether a spool assignment
  * may be cleared:
- *  - 'transient': HA doesn't know yet (unavailable/unknown) or sent no name.
+ *  - 'transient': HA doesn't know yet (unavailable/unknown), sent no name, or
+ *    the AMS is still reading the RFID tag of a freshly loaded spool ("?").
  *    NEVER clear an assignment on this — it's a reconnect/resync glitch.
  *  - 'empty': a real empty-slot signal — literal "Empty" (ha-bambulab) or a blank
  *    name (ha_creality_ws). The webhook still re-queries live HA state before
@@ -55,7 +56,7 @@ export function filamentWeight(lengthCm: number, filament?: { density?: number; 
  */
 export function classifyTrayState(name: string | null | undefined): 'transient' | 'empty' | 'present' {
   const nameLower = (name ?? '').toString().toLowerCase();
-  if (name === undefined || name === null || nameLower === 'unavailable' || nameLower === 'unknown') {
+  if (name === undefined || name === null || nameLower === 'unavailable' || nameLower === 'unknown' || name === '?') {
     return 'transient';
   }
   if (nameLower === 'empty' || name === '') {
@@ -78,4 +79,25 @@ export function isActivePrintState(state: string | null | undefined): boolean {
   }
 
   return true;
+}
+
+/**
+ * Returns true when a serial reported on a tray_change should NOT be trusted
+ * for auto-assign. Seen on X1C firmware 01.12 with an AMS HT: the empty
+ * external spool slot briefly (~1s) reports the HT spool's tray_uuid while
+ * still flagging `empty: true`, which would otherwise move the spool off the
+ * HT and charge the next print's usage to the wrong tray.
+ *
+ * `live` is the tray's current HA state. Fails open (returns false) when it
+ * is missing so serial matching keeps working without HA.
+ */
+export function isPhantomSerialReport(
+  reportedUuid: string | null | undefined,
+  live: { attributes?: Record<string, unknown> } | null | undefined,
+): boolean {
+  const attrs = live?.attributes;
+  if (!attrs) return false;
+  if (attrs.empty === true) return true;
+  const liveUuid = (attrs.tray_uuid ?? '').toString().toUpperCase();
+  return liveUuid !== '' && liveUuid !== (reportedUuid ?? '').toString().toUpperCase();
 }
