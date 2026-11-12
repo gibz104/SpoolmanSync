@@ -6,8 +6,13 @@ export function SpoolReelDetails({ spool, showLocation }: { spool: Spool; showLo
   const shadeId = React.useId();
   const weight = spool.remaining_weight;
   const known = typeof weight === 'number' && Number.isFinite(weight) && weight >= 0;
-  const percent = known ? Math.round(weight / 10) : null; // 1000 g = 100%.
-  const amount = known ? Math.min(100, weight / 10) : 0;
+  // Prefer this roll's net weight, then the filament's nominal full weight.
+  const fullWeight = [spool.initial_weight, spool.filament.weight].find(
+    value => typeof value === 'number' && Number.isFinite(value) && value > 0,
+  ) ?? 1000;
+  const remainingPercent = known ? weight / fullWeight * 100 : 0;
+  const percent = known ? Math.round(remainingPercent) : null;
+  const amount = Math.min(100, remainingPercent);
   const colors = (spool.filament.multi_color_hexes || spool.filament.color_hex || 'cccccc')
     .split(',').map(hex => '#' + hex.trim().replace(/^#/, ''));
   const row = (label: string, value: string) => <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', minWidth: 0, lineHeight: '1.85' }}>

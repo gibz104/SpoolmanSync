@@ -35,6 +35,33 @@ describe('dashboard spool reels', () => {
     expect(html).not.toContain('0% remaining');
   });
 
+  it.each([[1100, 100], [550, 50], [220, 20]])(
+    'uses a 1100 g roll initial weight for %s g remaining', (weight, percent) => {
+      const html = render({ initial_weight: 1100, remaining_weight: weight,
+        filament: { ...spool.filament, weight: 1000 } });
+      expect(html).toContain(`aria-label="${percent}% remaining"`);
+      expect(html).toContain(`stroke-dasharray="${percent} ${100 - percent}"`);
+    },
+  );
+
+  it.each([null, undefined, 0, -1, NaN, Infinity])(
+    'falls back from invalid initial weight %s to the filament full weight', initial => {
+      const html = render({ initial_weight: initial as number, remaining_weight: 550,
+        filament: { ...spool.filament, weight: 1100 } });
+      expect(html).toContain('aria-label="50% remaining"');
+      expect(html).toContain('stroke-dasharray="50 50"');
+    },
+  );
+
+  it.each([null, undefined, 0, -1, NaN, Infinity])(
+    'uses the 1000 g default when both capacities are invalid (%s)', invalid => {
+      const html = render({ initial_weight: invalid as number, remaining_weight: 400,
+        filament: { ...spool.filament, weight: invalid as number } });
+      expect(html).toContain('aria-label="40% remaining"');
+      expect(html).toContain('stroke-dasharray="40 60"');
+    },
+  );
+
   it('splits the remaining arc across multiple filament colors', () => {
     const html = render({ filament: { ...spool.filament, multi_color_hexes: 'ff0000,00ff00' } });
     expect(html).toContain('stroke="#ff0000"');
