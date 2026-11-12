@@ -26,6 +26,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
+import { SpoolReelDetails, SpoolSlotBadge } from './spool-reel-details';
 import { SpoolFilterBar } from '@/components/dashboard/spool-filter-bar';
 import { SpoolColorSwatch } from '@/components/spool-color-swatch';
 import type { HATray } from '@/lib/api/homeassistant';
@@ -175,50 +176,7 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
 
   // A spool's details. Each row is one height whatever the spool, so every
   // filled card is as tall as the next.
-  const spoolDetails = (spool: Spool) => {
-    const weight = spool.remaining_weight;
-    return (
-      <>
-        {/* Main content: color circle + filament name, with room for two lines either way */}
-        <div className="flex min-h-9 items-center gap-2 mb-2">
-          <SpoolColorSwatch filament={spool.filament} />
-          <p className="text-sm font-semibold leading-tight line-clamp-2 [hyphens:none]" title={spool.filament.name || spool.filament.material}>
-            {spool.filament.name || spool.filament.material}
-          </p>
-        </div>
-
-        {/* Info: material and vendor stacked, each on one line */}
-        <div className="space-y-1 mb-2 flex-1">
-          <div className="flex items-baseline gap-1">
-            <span className="shrink-0 text-[9px] font-medium text-muted-foreground uppercase">Material:</span>
-            <span className="min-w-0 text-xs font-medium truncate">{spool.filament.material}</span>
-          </div>
-          <div className="flex items-baseline gap-1">
-            <span className="shrink-0 text-[9px] font-medium text-muted-foreground uppercase">Vendor:</span>
-            <span className="min-w-0 text-xs font-medium truncate">{spool.filament.vendor?.name || 'Unknown'}</span>
-          </div>
-          {showLocation && (
-            <div className="flex items-baseline gap-1">
-              <span className="shrink-0 text-[9px] font-medium text-muted-foreground uppercase">Location:</span>
-              <span className="min-w-0 text-xs font-medium truncate">{spool.location || '—'}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Footer: spool ID and weight (only a valid, non-negative weight) */}
-        <div className="flex h-5 items-center justify-between mt-auto pt-1">
-          <span className="text-[10px] text-muted-foreground">
-            #{spool.id}
-          </span>
-          {typeof weight === 'number' && weight >= 0 && (
-            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 whitespace-nowrap">
-              {Math.round(weight)}g<span className="hidden min-[320px]:inline"> Remaining</span>
-            </Badge>
-          )}
-        </div>
-      </>
-    );
-  };
+  const spoolDetails = (spool: Spool) => <SpoolReelDetails spool={spool} showLocation={showLocation} />;
 
   const handleUnassign = (e: React.MouseEvent | React.KeyboardEvent) => {
     e.stopPropagation(); // Prevent opening the dialog
@@ -254,7 +212,7 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
               the rest. The unassign control overlays the right end. */}
           <div className="flex h-5 w-full min-w-0 items-center gap-1.5 mb-2 pr-6">
             <span className="shrink-0 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-              {trayLabel}
+              {tray.is_external ? trayLabel : <SpoolSlotBadge number={tray.tray_number} label={trayLabel} />}
             </span>
             {mismatch && assignedSpool && (
               <span
