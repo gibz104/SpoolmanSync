@@ -4,7 +4,7 @@
 
 ## Supported Printers
 
-- **Bambu Lab**: X1C, X1 Carbon, P1S, P1P, P2S, A1, A1 mini, H2D, H2C, X2D with AMS, AMS 2 Pro, AMS HT, AMS Lite (via ha-bambulab integration)
+- **Bambu Lab**: X1C, X1 Carbon, P1S, P1P, P2S, A1, A1 mini, H2D, H2C, X2D with AMS, H3C with AMS 3H, AMS 2 Pro, AMS HT, AMS Lite (via ha-bambulab integration)
 - **Creality**: K1, K1C, K1 Max, K2, K2 Pro, K2 Plus, Hi, Ender 3 V3 with CFS / Creality Filament System (via ha_creality_ws integration)
 
 Works with filament from any vendor (Polymaker, Sunlu, Elegoo, Hatchbox, eSUN, Bambu Lab, generic, etc.) — not just printer-brand filament.
