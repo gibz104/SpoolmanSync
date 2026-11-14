@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Verify addon version matches package.json
         if: startsWith(github.ref, 'refs/tags/v')
@@ -38,17 +38,17 @@ jobs:
           echo "Versions match: $APP_VERSION"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY_GITHUB }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY_DOCKERHUB }}
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -57,7 +57,7 @@ jobs:
       # Generate tags based on trigger type
       - name: Generate Docker tags for app
         id: meta-app
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ${{ env.REGISTRY_GITHUB }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME_APP }}
@@ -75,7 +75,7 @@ jobs:
 
       - name: Generate Docker tags for HA
         id: meta-ha
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ${{ env.REGISTRY_GITHUB }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME_HA }}
@@ -89,7 +89,7 @@ jobs:
 
       - name: Generate Docker tags for addon
         id: meta-addon
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: |
             ${{ env.REGISTRY_GITHUB }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME_ADDON }}
@@ -103,7 +103,7 @@ jobs:
 
       # Build and push main app image (multi-arch: amd64 + arm64)
       - name: Build and push SpoolmanSync app
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./app
           file: ./app/Dockerfile
@@ -116,7 +116,7 @@ jobs:
 
       # Build and push Home Assistant image (multi-arch: amd64 + arm64)
       - name: Build and push SpoolmanSync Home Assistant
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./homeassistant
           file: ./homeassistant/Dockerfile
@@ -130,7 +130,7 @@ jobs:
       # Build and push HA add-on image (multi-arch: amd64 + arm64)
       # Context is repo root since Dockerfile needs both app/ and spoolmansync-ha-addon/rootfs/
       - name: Build and push SpoolmanSync Add-on
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./spoolmansync-ha-addon/Dockerfile
