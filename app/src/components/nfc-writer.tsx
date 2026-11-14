@@ -255,7 +255,8 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
       if (tagUid) void linkWrittenTag(spoolId, tagUid);
     } catch (err) {
       setWriteStatus('error');
-      setErrorMessage(nfcErrorMessage(err, 'Failed to write to the NFC tag.'));
+      // The browser's own words for anything without a message of ours.
+      setErrorMessage(nfcErrorMessage(err, (err instanceof Error && err.message) || 'Failed to write to the NFC tag.'));
     }
   };
 
