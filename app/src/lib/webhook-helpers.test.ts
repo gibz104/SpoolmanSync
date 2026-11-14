@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyTrayState, filamentWeight, isValidTrayUuid, isActivePrintState, MATERIAL_DENSITY } from './webhook-helpers';
+import { classifyTrayState, filamentWeight, isValidTrayUuid, isActivePrintState, isPhantomSerialReport, MATERIAL_DENSITY } from './webhook-helpers';
 
 describe('classifyTrayState (issue #65 — never clear on transient states)', () => {
   it('treats unavailable/unknown/missing as transient (must NOT clear assignment)', () => {
@@ -9,6 +9,7 @@ describe('classifyTrayState (issue #65 — never clear on transient states)', ()
     expect(classifyTrayState('unknown')).toBe('transient');
     expect(classifyTrayState('Unavailable')).toBe('transient'); // case-insensitive
     expect(classifyTrayState('UNKNOWN')).toBe('transient');
+    expect(classifyTrayState('?')).toBe('transient'); // AMS still reading the RFID tag
   });
 
   it('treats literal Empty and blank name as empty', () => {
@@ -69,5 +70,27 @@ describe('isActivePrintState', () => {
     for (const state of ['printing', 'running', 'paused', 'pause', 'prepare', 'slicing', 'auto_bed_leveling']) {
       expect(isActivePrintState(state)).toBe(true);
     }
+  });
+});
+
+describe('isPhantomSerialReport', () => {
+  const UUID = 'A1B2C3D4E5F60718293A4B5C6D7E8F90';
+
+  it('rejects a serial on a slot that reports empty', () => {
+    expect(isPhantomSerialReport(UUID, { attributes: { empty: true, tray_uuid: UUID } })).toBe(true);
+  });
+
+  it('rejects a serial the slot no longer reports', () => {
+    expect(isPhantomSerialReport(UUID, { attributes: { empty: false, tray_uuid: '0000000000000000' } })).toBe(true);
+  });
+
+  it('accepts a serial the slot still reports, ignoring case', () => {
+    expect(isPhantomSerialReport(UUID, { attributes: { empty: false, tray_uuid: UUID.toLowerCase() } })).toBe(false);
+  });
+
+  it('fails open without live state', () => {
+    expect(isPhantomSerialReport(UUID, null)).toBe(false);
+    expect(isPhantomSerialReport(UUID, {})).toBe(false);
+    expect(isPhantomSerialReport(UUID, { attributes: { tray_uuid: '' } })).toBe(false);
   });
 });

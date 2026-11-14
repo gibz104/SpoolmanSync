@@ -5,7 +5,7 @@ import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import { spoolEvents, SPOOL_UPDATED, SpoolUpdateEvent } from '@/lib/events';
 import { createActivityLog } from '@/lib/activity-log';
 import { getWebhookSecret, isWebhookAuthEnabled, tokensMatch, WEBHOOK_TOKEN_HEADER } from '@/lib/webhook-secret';
-import { isValidTrayUuid, classifyTrayState, isActivePrintState } from '@/lib/webhook-helpers';
+import { isValidTrayUuid, classifyTrayState, isActivePrintState, isPhantomSerialReport } from '@/lib/webhook-helpers';
 import { processGlobal } from '@/lib/process-global';
 import { trayCarriesSpoolSerial } from '@/lib/creality';
 import { applyLocationSync } from '@/lib/spool-location';
@@ -256,6 +256,24 @@ export async function POST(request: NextRequest) {
       // Tray has filament - try to auto-match by spool serial number
       // Uses the `tag` field (stored when the usage tracker first bills a spool from this tray)
       if (isValidTrayUuid(tray_uuid) && await traySupportsSerial(tray_entity_id)) {
+        // Don't trust a serial on a slot that says it is empty, or one that has
+        // already changed back (phantom report, see isPhantomSerialReport).
+        let live: { attributes?: Record<string, unknown> } | null = null;
+        try {
+          const haClient = await HomeAssistantClient.fromConnection();
+          live = haClient ? await haClient.getState(tray_entity_id) : null;
+        } catch (err) {
+          console.warn('Could not re-query live HA state before serial match:', err);
+        }
+        if (isPhantomSerialReport(tray_uuid, live)) {
+          await createActivityLog({
+            type: 'tray_change_ignored',
+            message: `Ignored serial ${tray_uuid} on ${tray_entity_id}: slot reports empty or serial no longer present, assignment kept`,
+            details: { trayId: tray_entity_id, reason: 'phantom_serial', trayUuid: tray_uuid },
+          });
+          return NextResponse.json({ status: 'ignored', reason: 'phantom_serial' });
+        }
+
         const matchedSpool = await client.findSpoolByTag(tray_uuid);
 
         if (matchedSpool) {
