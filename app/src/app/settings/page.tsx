@@ -15,6 +15,7 @@ import { toast } from 'sonner';
 import { AddPrinterDialog } from '@/components/add-printer-dialog';
 import { LabelWithHint } from '@/components/label-with-hint';
 import type { AlertConfig, ActiveAlert, AvailableGroup } from '@/lib/alerts';
+import { copyText } from '@/lib/clipboard';
 
 interface FilterField {
   key: string;
@@ -353,7 +354,7 @@ function SettingsContent() {
 
   const copyToClipboard = async (text: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      if (!(await copyText(text))) throw new Error('copy failed');
       toast.success(`${label} copied to clipboard`);
     } catch {
       toast.error('Failed to copy to clipboard');

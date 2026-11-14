@@ -15,6 +15,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { toast } from 'sonner';
+import { copyText } from '@/lib/clipboard';
 
 interface PrinterRegistration {
   prefix: string;
@@ -252,20 +253,7 @@ export default function AutomationsPage() {
 
   const copyToClipboard = async (text: string, type: 'config' | 'automations') => {
     try {
-      // Try using the Clipboard API first
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        // Fallback for non-secure contexts (like HTTP)
-        const textArea = document.createElement('textarea');
-        textArea.value = text;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-999999px';
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-      }
+      if (!(await copyText(text))) throw new Error('copy failed');
 
       if (type === 'config') {
         setCopiedConfig(true);
