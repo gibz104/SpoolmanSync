@@ -43,7 +43,7 @@ export function SlotTags({ directAccessPort, qrBaseUrl }: { directAccessPort?: n
       await writeNfcLink(linkFor(slot));
       toast.success(`Tag written for ${slot.printer} ${slotLabel(slot)}`);
     } catch (err) {
-      toast.error(nfcErrorMessage(err));
+      toast.error(nfcErrorMessage(err, 'Failed to write to the NFC tag.'));
     } finally {
       setWriting(null);
     }

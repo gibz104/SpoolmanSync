@@ -47,6 +47,11 @@ export interface SpoolTag {
   format?: string | null;
 }
 
+/** The error for a response Spoolman refused, carrying its HTTP status. */
+async function apiError(response: Response): Promise<Error & { status: number }> {
+  return Object.assign(new Error(`Spoolman API error: ${response.status} - ${await response.text()}`), { status: response.status });
+}
+
 /** A tag Spoolman has linked to something this cannot move it from: a filament, say. */
 export class TagHeldError extends Error {
   constructor(message: string) {
@@ -272,8 +277,8 @@ export class SpoolmanClient {
     return extra;
   }
 
-  private async fetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-    const response = await fetch(`${this.baseUrl}/api/v1${endpoint}`, {
+  private request(endpoint: string, options: RequestInit = {}): Promise<Response> {
+    return fetch(`${this.baseUrl}/api/v1${endpoint}`, {
       // No request may hang for ever: the usage tracker waits on these.
       signal: AbortSignal.timeout(30_000),
       ...options,
@@ -282,12 +287,11 @@ export class SpoolmanClient {
         ...options.headers,
       },
     });
+  }
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw Object.assign(new Error(`Spoolman API error: ${response.status} - ${error}`), { status: response.status });
-    }
-
+  private async fetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    const response = await this.request(endpoint, options);
+    if (!response.ok) throw await apiError(response);
     return response.json();
   }
 
@@ -573,12 +577,7 @@ export class SpoolmanClient {
   async linkTagUid(spoolId: number, uid: string): Promise<{ movedFrom: number | null }> {
     const target = normalizeTagUid(uid);
     if (!target) throw new Error(`"${uid}" is not a tag UID`);
-    const link = () => fetch(`${this.baseUrl}/api/v1/spool/${spoolId}/tag`, {
-      method: 'POST',
-      signal: AbortSignal.timeout(30_000),
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ uid: target }),
-    });
+    const link = () => this.request(`/spool/${spoolId}/tag`, { method: 'POST', body: JSON.stringify({ uid: target }) });
     let movedFrom: number | null = null;
     let response = await link();
     if (response.status === 409) {
@@ -590,21 +589,14 @@ export class SpoolmanClient {
       movedFrom = holder.spool_id;
       response = await link();
     }
-    if (!response.ok) {
-      throw Object.assign(new Error(`Spoolman API error: ${response.status} - ${await response.text()}`), { status: response.status });
-    }
+    if (!response.ok) throw await apiError(response);
     return { movedFrom };
   }
 
   /** Unlink a tag from a spool in Spoolman (0.27+). */
   async unlinkTagUid(spoolId: number, uid: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/api/v1/spool/${spoolId}/tag/${normalizeTagUid(uid)}`, {
-      method: 'DELETE',
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!response.ok) {
-      throw Object.assign(new Error(`Spoolman API error: ${response.status} - ${await response.text()}`), { status: response.status });
-    }
+    const response = await this.request(`/spool/${spoolId}/tag/${normalizeTagUid(uid)}`, { method: 'DELETE' });
+    if (!response.ok) throw await apiError(response);
   }
 
   /**

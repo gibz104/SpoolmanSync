@@ -14,12 +14,8 @@ export function parseScanLink(input: string): ScanTarget | null {
   const text = input.trim();
   const slot = text.match(/\/scan\/tray\/([^/?#\s]+)/i);
   if (slot) {
-    try {
-      const key = decodeURIComponent(slot[1]);
-      return key ? { kind: 'slot', key } : null;
-    } catch {
-      return null;
-    }
+    const key = slotKeyFromSegment(slot[1]);
+    return key ? { kind: 'slot', key } : null;
   }
   const id = text.match(/\/scan\/spool\/(\d+)/i)?.[1]
     ?? text.match(/web\+spoolman:s-(\d+)/i)?.[1]
@@ -30,6 +26,20 @@ export function parseScanLink(input: string): ScanTarget | null {
 /** The path of a slot's page, which its tag or QR code links to. */
 export function slotPath(key: string): string {
   return `/scan/tray/${encodeURIComponent(key)}`;
+}
+
+/** A slot's key from the last segment of its path (see slotPath), or null if it can't be decoded. */
+export function slotKeyFromSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The page a scanned spool or slot opens. */
+export function scanTargetPath(target: ScanTarget): string {
+  return target.kind === 'spool' ? `/scan/spool/${target.id}` : slotPath(target.key);
 }
 
 /**

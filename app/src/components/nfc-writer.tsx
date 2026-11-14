@@ -30,7 +30,7 @@ import { SpoolColorSwatch } from '@/components/spool-color-swatch';
 import type { Spool } from '@/lib/api/spoolman';
 import { buildSpoolSearchValue, parseExtraValue } from '@/lib/api/spoolman';
 import { buildExternalUrl } from '@/lib/ingress-path';
-import { isSecureUrl, type NfcBlocker } from '@/lib/web-nfc';
+import { isSecureUrl, nfcErrorMessage, writeNfcLink, type NfcBlocker } from '@/lib/web-nfc';
 import { useNfcBlocker } from '@/lib/use-nfc-blocker';
 import { copyText } from '@/lib/clipboard';
 
@@ -249,65 +249,13 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
     setLinkNote('');
 
     try {
-      // Check NFC permission status first
-      if ('permissions' in navigator) {
-        try {
-          const permissionStatus = await navigator.permissions.query({ name: 'nfc' as PermissionName });
-          if (permissionStatus.state === 'denied') {
-            setWriteStatus('error');
-            setErrorMessage('NFC permission is blocked. Please enable NFC permissions for this site in your browser settings.');
-            return;
-          }
-        } catch {
-          // Permission query not supported, continue anyway
-        }
-      }
-
-      const ndef = new window.NDEFReader();
-      const scan = new AbortController();
-      // The scan also reports the tapped tag's UID, for linking it in Spoolman.
-      let tagUid = '';
-      ndef.onreading = (event) => { tagUid = event.serialNumber ?? ''; };
-
-      try {
-        // Request permission by initiating a scan first
-        // This triggers the browser's NFC permission prompt if not yet granted
-        await ndef.scan({ signal: scan.signal });
-
-        // Now write to the tag
-        await ndef.write({
-          records: [{ recordType: 'url', data: nfcUrl }],
-        });
-        setWriteStatus('success');
-        // The reading event can trail the write by a moment.
-        for (let waited = 0; !tagUid && waited < 1000; waited += 100) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
-      } finally {
-        scan.abort();
-      }
+      // The tap also reports the tag's UID, for linking it in Spoolman.
+      const tagUid = await writeNfcLink(nfcUrl, true);
+      setWriteStatus('success');
       if (tagUid) void linkWrittenTag(spoolId, tagUid);
     } catch (err) {
       setWriteStatus('error');
-      if (err instanceof Error) {
-        if (err.name === 'NotAllowedError') {
-          setErrorMessage('NFC permission is blocked. Please enable NFC permissions for this site in your browser settings.');
-        } else if (err.name === 'NotSupportedError') {
-          setErrorMessage('NFC is not supported on this device.');
-        } else if (err.name === 'NotReadableError') {
-          setErrorMessage('Could not read the NFC tag. Make sure it\'s positioned correctly.');
-        } else if (err.name === 'NetworkError') {
-          setErrorMessage('NFC transfer failed. Please try again.');
-        } else if (err.name === 'AbortError') {
-          setErrorMessage('NFC operation was cancelled.');
-        } else if (err.name === 'SecurityError') {
-          setErrorMessage('This page is not allowed to use NFC. Open SpoolmanSync on its own page in Chrome, not inside Home Assistant.');
-        } else {
-          setErrorMessage(err.message || 'Failed to write to NFC tag.');
-        }
-      } else {
-        setErrorMessage('An unknown error occurred.');
-      }
+      setErrorMessage(nfcErrorMessage(err, 'Failed to write to the NFC tag.'));
     }
   };
 

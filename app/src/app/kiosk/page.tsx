@@ -7,7 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Nfc, MonitorSmartphone } from 'lucide-react';
 import { isKioskMode, enableKioskMode, disableKioskMode } from '@/lib/kiosk';
-import { parseScanLink, slotPath, type ScanTarget } from '@/lib/scan-codes';
+import { scanTargetPath } from '@/lib/scan-codes';
+import { lookUpScanCode } from '@/lib/scan-client';
 
 export default function KioskPage() {
   const router = useRouter();
@@ -58,20 +59,10 @@ export default function KioskPage() {
       const code = scanInput.trim();
       setScanInput('');
       if (!code) return;
-      const open = (target: ScanTarget) =>
-        router.push(target.kind === 'spool' ? `/scan/spool/${target.id}` : slotPath(target.key));
-      const link = parseScanLink(code);
-      if (link) {
-        open(link);
-        return;
-      }
       try {
-        const res = await fetch(`/api/spools/resolve?code=${encodeURIComponent(code)}`);
-        if (res.ok) {
-          open((await res.json()).target);
-          return;
-        }
-        setNotFound(res.status === 404 ? `No spool found for ${code}` : 'Could not look that up');
+        const target = await lookUpScanCode(code);
+        if (target) router.push(scanTargetPath(target));
+        else setNotFound(`No spool found for ${code}`);
       } catch {
         setNotFound('Could not look that up');
       }

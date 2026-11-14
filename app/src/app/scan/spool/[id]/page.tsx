@@ -19,7 +19,9 @@ import { ArrowLeft, Loader2, CheckCircle2 } from 'lucide-react';
 import { SpoolColorSwatch } from '@/components/spool-color-swatch';
 import type { Spool } from '@/lib/api/spoolman';
 import { isKioskMode, disableKioskMode } from '@/lib/kiosk';
-import { forgetScans, recentSlot, rememberSpool } from '@/lib/scan-memory';
+import { assignSpool } from '@/lib/scan-client';
+import { recentSlot, rememberSpool } from '@/lib/scan-memory';
+import { slotLabel, slotOptions } from '@/lib/slot-options';
 import Link from 'next/link';
 
 interface TrayOption {
@@ -27,6 +29,8 @@ interface TrayOption {
   label: string;
   printer: string;
   amsName?: string;
+  /** The spool assigned there now. */
+  spoolId?: number;
 }
 
 export default function SpoolAssignPage({
@@ -112,35 +116,17 @@ export default function SpoolAssignPage({
         const printersData = await printersRes.json();
         if (!isActive()) return;
 
-        const trayOptions: TrayOption[] = [];
-
-        for (const printer of printersData.printers || []) {
-          for (const ams of printer.ams_units || []) {
-            for (const tray of ams.trays || []) {
-              trayOptions.push({
-                id: tray.unique_id || tray.entity_id,
-                label: `Tray ${tray.tray_number}`,
-                printer: printer.name,
-                amsName: ams.name,
-              });
-            }
-          }
-          const extSpools = printer.external_spools || [];
-          for (let i = 0; i < extSpools.length; i++) {
-            trayOptions.push({
-              id: extSpools[i].unique_id || extSpools[i].entity_id,
-              label:
-                extSpools[i].slot_name?.trim() ||
-                (extSpools.length > 1 ? `External Spool ${i + 1}` : 'External Spool'),
-              printer: printer.name,
-            });
-          }
-        }
+        const trayOptions: TrayOption[] = slotOptions(printersData.printers || []).map(slot => ({
+          id: slot.key,
+          label: slot.label,
+          printer: slot.printer,
+          amsName: slot.group,
+          spoolId: slot.spool?.id,
+        }));
 
         setTrays(trayOptions);
         const slotKey = recentSlot();
-        const assignedTo = (foundSpool.extra?.['active_tray'] ?? '').replace(/^"|"$/g, '');
-        setScannedSlot(trayOptions.find(t => t.id === slotKey && t.id !== assignedTo) ?? null);
+        setScannedSlot(trayOptions.find(t => t.id === slotKey && t.spoolId !== foundSpool.id) ?? null);
       }
     } catch (err) {
       // A fetch abort surfaces as an AbortError — swallow it, it's expected on
@@ -161,18 +147,10 @@ export default function SpoolAssignPage({
     setAssigning(true);
     setPendingTrayId(tray.id);
     try {
-      const res = await fetch('/api/spools', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spoolId: spool.id, trayId: tray.id }),
-      });
-
-      if (!res.ok) throw new Error('Failed to assign spool');
-      forgetScans();
+      await assignSpool(spool.id, tray.id);
 
       if (kioskMode) {
-        const trayLabel = tray.amsName ? `${tray.amsName} — ${tray.label}` : tray.label;
-        setKioskSuccess(trayLabel);
+        setKioskSuccess(slotLabel({ group: tray.amsName, label: tray.label }));
         setTimeout(() => router.push('/kiosk'), 1500);
       } else {
         toast.success('Spool assigned successfully!');
@@ -384,7 +362,7 @@ export default function SpoolAssignPage({
                 <CardHeader>
                   <CardTitle>Put it in the slot you just scanned?</CardTitle>
                   <CardDescription>
-                    {scannedSlot.printer} {scannedSlot.amsName ? `${scannedSlot.amsName} - ` : ''}{scannedSlot.label}
+                    {scannedSlot.printer} {slotLabel({ group: scannedSlot.amsName, label: scannedSlot.label })}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>

@@ -6,18 +6,11 @@ import { toast } from 'sonner';
 import { Nfc, Loader2, Link2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command';
-import { SpoolColorSwatch } from '@/components/spool-color-swatch';
+import { SpoolPickList } from '@/components/spool-pick-list';
 import type { Spool } from '@/lib/api/spoolman';
-import { buildSpoolSearchValue } from '@/lib/api/spoolman';
-import { normalizeTagUid, parseScanLink, slotPath, type ScanTarget } from '@/lib/scan-codes';
+import { normalizeTagUid, parseScanLink, scanTargetPath } from '@/lib/scan-codes';
+import { lookUpScanCode } from '@/lib/scan-client';
+import { nfcErrorMessage } from '@/lib/web-nfc';
 
 type ReadState =
   | { step: 'idle' }
@@ -50,16 +43,11 @@ function recordTexts(event: NDEFReadingEvent): string[] {
 export function NFCReader({ spools }: { spools: Spool[] }) {
   const router = useRouter();
   const [state, setState] = useState<ReadState>({ step: 'idle' });
-  const [search, setSearch] = useState('');
   const scan = useRef<AbortController | null>(null);
   // A tag can be reported more than once before the scan stops.
   const handled = useRef(false);
 
   useEffect(() => () => scan.current?.abort(), []);
-
-  const open = (target: ScanTarget) => {
-    router.push(target.kind === 'spool' ? `/scan/spool/${target.id}` : slotPath(target.key));
-  };
 
   const handleTag = async (event: NDEFReadingEvent) => {
     if (handled.current) return;
@@ -67,7 +55,7 @@ export function NFCReader({ spools }: { spools: Spool[] }) {
     scan.current?.abort(); // one tag at a time
     for (const text of recordTexts(event)) {
       const target = parseScanLink(text);
-      if (target) return open(target);
+      if (target) return router.push(scanTargetPath(target));
     }
     const uid = normalizeTagUid(event.serialNumber ?? '');
     if (!uid) {
@@ -76,10 +64,9 @@ export function NFCReader({ spools }: { spools: Spool[] }) {
     }
     setState({ step: 'looking-up' });
     try {
-      const res = await fetch(`/api/spools/resolve?code=${encodeURIComponent(uid)}`);
-      if (res.ok) return open((await res.json()).target);
-      if (res.status === 404) setState({ step: 'unlinked', uid });
-      else setState({ step: 'error', message: 'Could not look the tag up in Spoolman.' });
+      const target = await lookUpScanCode(uid);
+      if (target) router.push(scanTargetPath(target));
+      else setState({ step: 'unlinked', uid });
     } catch {
       setState({ step: 'error', message: 'Could not look the tag up in Spoolman.' });
     }
@@ -101,15 +88,7 @@ export function NFCReader({ spools }: { spools: Spool[] }) {
       await reader.scan({ signal: controller.signal });
     } catch (err) {
       if (controller.signal.aborted) return;
-      const name = err instanceof Error ? err.name : '';
-      setState({
-        step: 'error',
-        message: name === 'NotAllowedError'
-          ? 'NFC permission was refused. Allow NFC for this site in Chrome\'s site settings.'
-          : name === 'NotReadableError'
-            ? 'The phone\'s NFC reader is busy or switched off.'
-            : 'Could not start reading NFC tags.',
-      });
+      setState({ step: 'error', message: nfcErrorMessage(err, 'Could not start reading NFC tags.') });
     }
   };
 
@@ -177,31 +156,7 @@ export function NFCReader({ spools }: { spools: Spool[] }) {
               <span className="block font-mono text-xs text-muted-foreground mt-1">{state.uid}</span>
             </AlertDescription>
           </Alert>
-          <Command className="rounded-lg border">
-            <CommandInput placeholder="Search spools by name, vendor, material, or ID..." value={search} onValueChange={setSearch} />
-            <CommandList className="max-h-[200px]">
-              <CommandEmpty>No spools found.</CommandEmpty>
-              <CommandGroup heading={`${spools.length} spools`}>
-                {spools.map(spool => (
-                  <CommandItem
-                    key={spool.id}
-                    value={buildSpoolSearchValue(spool)}
-                    onSelect={() => handleLink(spool, state.uid)}
-                    disabled={state.step === 'linking'}
-                    className="flex items-center gap-3 py-2 cursor-pointer"
-                  >
-                    <SpoolColorSwatch filament={spool.filament} size="h-5 w-5" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{spool.filament.name || spool.filament.material}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {spool.filament.vendor?.name ? `${spool.filament.vendor.name} • ` : ''}#{spool.id}
-                      </p>
-                    </div>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            </CommandList>
-          </Command>
+          <SpoolPickList spools={spools} onPick={spool => handleLink(spool, state.uid)} disabled={state.step === 'linking'} />
           <Button variant="outline" onClick={handleCancel} className="w-full" disabled={state.step === 'linking'}>
             Cancel
           </Button>

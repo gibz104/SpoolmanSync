@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Spool } from '@/lib/api/spoolman';
-import { normalizeTagUid, parseScanLink, slotPath } from './scan-codes';
+import { normalizeTagUid, parseScanLink, scanTargetPath, slotKeyFromSegment, slotPath } from './scan-codes';
 import { resolveScanCode } from './scan-resolve';
 
 const spool = (id: number, extra: Record<string, string> = {}) => ({ id, extra, archived: false }) as unknown as Spool;
@@ -23,6 +23,25 @@ describe('parseScanLink', () => {
     expect(parseScanLink('04:a2:b3:c4')).toBeNull();
     expect(parseScanLink('https://example.com/other/12')).toBeNull();
     expect(parseScanLink('https://sync.example.com/scan/tray/%E0%A4%A')).toBeNull();
+  });
+});
+
+describe('slot keys in paths', () => {
+  it('round-trips any key through its page path', () => {
+    for (const key of ['X1C_00M09A_AMS_1_tray_2', 'virtual_Dry Box/1 #2 100%_tray_3', 'virtual_Ätzbox_tray_1']) {
+      const segment = slotPath(key).split('/').at(-1)!;
+      expect(slotKeyFromSegment(segment)).toBe(key);
+    }
+  });
+
+  it('gives null for a segment that does not decode, or decodes to nothing', () => {
+    expect(slotKeyFromSegment('%E0%A4%A')).toBeNull();
+    expect(slotKeyFromSegment('')).toBeNull();
+  });
+
+  it('opens a spool or a slot page', () => {
+    expect(scanTargetPath({ kind: 'spool', id: 4 })).toBe('/scan/spool/4');
+    expect(scanTargetPath({ kind: 'slot', key: 'a b' })).toBe('/scan/tray/a%20b');
   });
 });
 

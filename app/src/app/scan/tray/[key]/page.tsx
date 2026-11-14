@@ -4,32 +4,18 @@ import { useState, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Loader2 } from 'lucide-react';
 import { Nav } from '@/components/nav';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command';
 import { SpoolColorSwatch } from '@/components/spool-color-swatch';
+import { SpoolPickList } from '@/components/spool-pick-list';
 import type { Spool } from '@/lib/api/spoolman';
-import { buildSpoolSearchValue } from '@/lib/api/spoolman';
 import { isKioskMode } from '@/lib/kiosk';
-import { forgetScans, recentSpool, rememberSlot } from '@/lib/scan-memory';
+import { slotKeyFromSegment } from '@/lib/scan-codes';
+import { assignSpool } from '@/lib/scan-client';
+import { recentSpool, rememberSlot } from '@/lib/scan-memory';
 import { slotLabel, slotOptions, type SlotOption } from '@/lib/slot-options';
-
-function decodeSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
-}
 
 function SpoolRow({ spool }: { spool: Spool }) {
   return (
@@ -53,7 +39,7 @@ function SpoolRow({ spool }: { spool: Spool }) {
 export default function SlotPage({ params }: { params: Promise<{ key: string }> }) {
   // Next.js hands the segment over still percent-encoded (a storage box's name can hold anything).
   const { key: segment } = use(params);
-  const key = decodeSegment(segment);
+  const key = slotKeyFromSegment(segment);
   const router = useRouter();
   const [slot, setSlot] = useState<SlotOption | null>(null);
   const [spools, setSpools] = useState<Spool[]>([]);
@@ -62,6 +48,7 @@ export default function SlotPage({ params }: { params: Promise<{ key: string }> 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [assigning, setAssigning] = useState(false);
+  const [kioskDone, setKioskDone] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -77,7 +64,7 @@ export default function SlotPage({ params }: { params: Promise<{ key: string }> 
         }
         const found = slotOptions((await printersRes.json()).printers ?? []).find(s => s.key === key);
         const allSpools: Spool[] = (await spoolsRes.json()).spools ?? [];
-        if (!found) {
+        if (!found || key === null) {
           setError('This slot no longer exists: it was removed, or its storage box renamed. Write its tag again from the Scan page.');
           return;
         }
@@ -100,20 +87,32 @@ export default function SlotPage({ params }: { params: Promise<{ key: string }> 
     if (!slot) return;
     setAssigning(true);
     try {
-      const res = await fetch('/api/spools', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spoolId: spool.id, trayId: slot.key }),
-      });
-      if (!res.ok) throw new Error('Failed to assign spool');
-      forgetScans();
-      toast.success(`Spool #${spool.id} is now in ${slot.printer} ${slotLabel(slot)}`);
-      router.push(isKioskMode() ? '/kiosk' : '/');
+      await assignSpool(spool.id, slot.key);
+      if (isKioskMode()) {
+        setKioskDone(`${spool.filament.name || spool.filament.material} → ${slot.printer} ${slotLabel(slot)}`);
+        setTimeout(() => router.push('/kiosk'), 1500);
+      } else {
+        toast.success(`Spool #${spool.id} is now in ${slot.printer} ${slotLabel(slot)}`);
+        router.push('/');
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to assign');
       setAssigning(false);
     }
   };
+
+  // Kiosk mode: the same success screen the spool page shows.
+  if (kioskDone) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-[clamp(1rem,4vw,2rem)]">
+        <CheckCircle2 className="h-[clamp(3rem,15vw,5rem)] w-[clamp(3rem,15vw,5rem)] text-green-500 mb-[clamp(0.5rem,2vw,1rem)]" />
+        <h1 className="text-[clamp(1.25rem,5vw,2rem)] font-bold text-center text-green-500">Assigned!</h1>
+        <p className="text-[clamp(0.75rem,3vw,1rem)] text-muted-foreground text-center mt-[clamp(0.25rem,1vw,0.5rem)]">
+          {kioskDone}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -195,25 +194,7 @@ export default function SlotPage({ params }: { params: Promise<{ key: string }> 
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <Command className="rounded-lg border">
-                    <CommandInput placeholder="Search spools by name, vendor, material, or ID..." />
-                    <CommandList className="max-h-[300px]">
-                      <CommandEmpty>No spools found.</CommandEmpty>
-                      <CommandGroup heading={`${spools.length} spools`}>
-                        {spools.map(spool => (
-                          <CommandItem
-                            key={spool.id}
-                            value={buildSpoolSearchValue(spool)}
-                            onSelect={() => assign(spool)}
-                            disabled={assigning || spool.id === slot.spool?.id}
-                            className="py-2 cursor-pointer"
-                          >
-                            <SpoolRow spool={spool} />
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
+                  <SpoolPickList spools={spools} onPick={assign} disabled={assigning} excludeId={slot.spool?.id} />
                 </CardContent>
               </Card>
             )}

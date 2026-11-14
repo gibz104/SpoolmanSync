@@ -13,7 +13,8 @@ import { QRCodeGenerator } from '@/components/qr-code-generator';
 import { NFCWriter } from '@/components/nfc-writer';
 import { NFCReader } from '@/components/nfc-reader';
 import { SlotTags } from '@/components/slot-tags';
-import { parseScanLink, slotPath, type ScanTarget } from '@/lib/scan-codes';
+import { scanTargetPath } from '@/lib/scan-codes';
+import { lookUpScanCode } from '@/lib/scan-client';
 import { useNfcBlocker } from '@/lib/use-nfc-blocker';
 
 function ScanPageContent() {
@@ -32,26 +33,15 @@ function ScanPageContent() {
     setLoading(true);
     setError(null);
 
-    const open = (target: ScanTarget) =>
-      router.push(target.kind === 'spool' ? `/scan/spool/${target.id}` : slotPath(target.key));
-
     try {
       // A spool or slot link opens straight away; anything else (a spool id,
       // a barcode, a tag's UID) is looked up.
-      const link = parseScanLink(scannedData);
-      if (link) {
-        open(link);
-        return;
-      }
-
-      const res = await fetch(`/api/spools/resolve?code=${encodeURIComponent(scannedData.trim())}`);
-      if (res.ok) {
-        open((await res.json()).target);
-      } else if (res.status === 404) {
+      const target = await lookUpScanCode(scannedData);
+      if (target) {
+        router.push(scanTargetPath(target));
+      } else {
         setError(`No spool found for: ${scannedData}`);
         toast.error('No matching spool found');
-      } else {
-        throw new Error('Failed to look up spool');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to look up spool');

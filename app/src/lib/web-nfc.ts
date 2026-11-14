@@ -98,29 +98,40 @@ export function isSecureUrl(url: string): boolean {
   }
 }
 
-/** Write a link to the next tag held to the phone. Needs a page with no blocker. */
-export async function writeNfcLink(url: string): Promise<void> {
+/**
+ * Write a link to the next tag held to the phone. With `withUid`, also return
+ * the tag's UID, which the scan reports as the tag is tapped ('' if it didn't).
+ * Needs a page with no blocker.
+ */
+export async function writeNfcLink(url: string, withUid = false): Promise<string> {
   if (!window.NDEFReader) throw Object.assign(new Error('Web NFC is not available'), { name: 'NotSupportedError' });
   const reader = new window.NDEFReader();
   const scan = new AbortController();
+  let uid = '';
+  reader.onreading = event => { uid = event.serialNumber ?? ''; };
   try {
     // Scanning first is what asks for NFC permission.
     await reader.scan({ signal: scan.signal });
     await reader.write({ records: [{ recordType: 'url', data: url }] });
+    // The reading event can trail the write by a moment.
+    for (let waited = 0; withUid && !uid && waited < 1000; waited += 100) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
   } finally {
     scan.abort();
   }
+  return uid;
 }
 
-/** A sentence for a failed Web NFC call. */
-export function nfcErrorMessage(err: unknown): string {
+/** A sentence for a failed Web NFC call, or `fallback` for an error it has none for. */
+export function nfcErrorMessage(err: unknown, fallback: string): string {
   switch (err instanceof Error ? err.name : '') {
     case 'NotAllowedError': return 'NFC permission is blocked. Allow NFC for this site in Chrome\'s site settings.';
     case 'NotSupportedError': return 'NFC is not supported on this device.';
-    case 'NotReadableError': return 'Could not read the NFC tag. Make sure it\'s positioned correctly.';
-    case 'NetworkError': return 'NFC transfer failed. Please try again.';
+    case 'NotReadableError': return 'The phone\'s NFC is busy or switched off. Check that NFC is on in Android\'s settings.';
+    case 'NetworkError': return 'The tag moved away before it was done. Hold it still and try again.';
     case 'AbortError': return 'NFC operation was cancelled.';
-    case 'SecurityError': return 'This page is not allowed to use NFC. Open SpoolmanSync on its own page in Chrome.';
-    default: return 'Failed to write to the NFC tag.';
+    case 'SecurityError': return 'This page is not allowed to use NFC. Open SpoolmanSync on its own page in Chrome, not inside Home Assistant.';
+    default: return fallback;
   }
 }
