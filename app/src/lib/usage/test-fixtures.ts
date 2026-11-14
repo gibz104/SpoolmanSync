@@ -37,12 +37,18 @@ export class FakeHA {
 
   source = (onChange: (ids: string[]) => void, onStatus?: (connected: boolean) => void) => {
     this.changed = onChange;
+    // Like EntitySubscription, stopping closes the connection, and a pass
+    // finds nothing to read once it is closed.
+    let connected = true;
     return {
       states: this.states,
-      get connected() { return true; },
+      get connected() { return connected; },
       watch: () => {},
-      start: () => onStatus?.(true),
-      stop: () => {},
+      start: () => {
+        connected = true;
+        onStatus?.(true);
+      },
+      stop: () => { connected = false; },
     };
   };
 

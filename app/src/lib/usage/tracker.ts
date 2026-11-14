@@ -133,16 +133,21 @@ export class UsageTracker {
   }
 
   /**
-   * Stop for good, as the process is about to exit: let a pass already
-   * running (and the Spoolman write in it) finish, then save every open
-   * print exactly where it is instead of where the last throttled save left it.
+   * Stop for good, as the process is about to exit: fold in what Home
+   * Assistant has already reported (a change still waiting out the debounce,
+   * passes queued or running, and the Spoolman writes in them) while still
+   * connected, since a pass does nothing once the connection is closed. Then
+   * save every open print where it is, not where the last throttled save
+   * left it.
    */
   async shutdown(): Promise<void> {
+    if (this.scheduled) clearTimeout(this.scheduled);
+    this.scheduled = null;
+    await this.flush();
     this.stop();
     await this.chain;
     for (const open of this.open.values()) {
-      open.savedAt = -Infinity;
-      await this.save(open).catch(err => console.error('[usage] Could not save a print on shutdown:', err));
+      await this.save(open, true).catch(err => console.error('[usage] Could not save a print on shutdown:', err));
     }
   }
 
@@ -284,10 +289,11 @@ export class UsageTracker {
     if (outcome?.notes.length) await this.addAttention(open.id, outcome.notes);
   }
 
-  private async save(open: Open): Promise<void> {
+  /** Save a print's state; progress alone at most every SAVE_EVERY_MS, unless `force`d. */
+  private async save(open: Open, force = false): Promise<void> {
     const state = JSON.stringify(open.state);
     const marks = milestones(open.state);
-    if (state === open.saved || (marks === open.savedMilestones && this.deps.now() - open.savedAt < SAVE_EVERY_MS)) return;
+    if (state === open.saved || (!force && marks === open.savedMilestones && this.deps.now() - open.savedAt < SAVE_EVERY_MS)) return;
     await prisma.printSession.update({
       where: { id: open.id },
       data: { state, name: open.state.job.name ?? open.state.job.file },

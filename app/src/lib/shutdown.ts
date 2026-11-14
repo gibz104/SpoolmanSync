@@ -15,11 +15,13 @@ const SHUTDOWN_TIMEOUT_MS = 8_000;
  */
 export function handleShutdownSignals(): void {
   if (!process.env.NEXT_MANUAL_SIG_HANDLE) return;
-  // Once per process, however many times instrumentation runs.
+  // Once per process, however many times instrumentation runs. The handlers
+  // stay installed: a second signal is ignored, where with none left Node's
+  // default would end the process mid-write.
   processGlobal('shutdown', () => {
     let started = false;
     for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-      process.once(signal, () => {
+      process.on(signal, () => {
         if (started) return;
         started = true;
         void shutdown(signal);

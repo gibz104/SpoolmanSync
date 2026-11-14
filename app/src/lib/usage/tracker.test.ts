@@ -262,6 +262,16 @@ describe('Bambu', () => {
     expect(spoolman.used(1)).toBe(60);
   });
 
+  it('writes a change still waiting to be passed on when it shuts down', async () => {
+    await bambuPrint(ha, flush, { name: 'benchy', plate: 100, tray: 1, during: pct => pct === 50 });
+    // Reported but not yet passed on: changes are gathered for a moment first.
+    ha.set(X1.progress, 65);
+    ha.tick(1000);
+    await tracker.shutdown();
+    expect(spoolman.used(1)).toBe(65);
+    expect(JSON.parse((await sessions())[0].state).progress).toBe(65);
+  });
+
   it('survives Home Assistant restarting mid-print', async () => {
     await bambuPrint(ha, flush, { name: 'benchy', plate: 100, tray: 1, during: pct => pct === 50 });
     // Entities come back unavailable, then re-created before the 3mf is parsed again.
