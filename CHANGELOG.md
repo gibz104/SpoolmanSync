@@ -5,7 +5,7 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.1] - 2026-11-14
 
 ### Security
 - Printer setup passed the flow ID it was sent straight into a request to Home Assistant, so a crafted request could make SpoolmanSync call any Home Assistant service with its login, such as one that unlocks a lock. Every ID SpoolmanSync puts into a Home Assistant or Spoolman request is now checked.
