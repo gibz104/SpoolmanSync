@@ -19,6 +19,7 @@ import { ArrowLeft, Loader2, CheckCircle2 } from 'lucide-react';
 import { SpoolColorSwatch } from '@/components/spool-color-swatch';
 import type { Spool } from '@/lib/api/spoolman';
 import { isKioskMode, disableKioskMode } from '@/lib/kiosk';
+import { forgetScans, recentSlot, rememberSpool } from '@/lib/scan-memory';
 import Link from 'next/link';
 
 interface TrayOption {
@@ -43,6 +44,8 @@ export default function SpoolAssignPage({
   const [error, setError] = useState<string | null>(null);
   const [kioskMode, setKioskMode] = useState(false);
   const [kioskSuccess, setKioskSuccess] = useState<string | null>(null);
+  // The slot scanned just before this spool, offered first (#97).
+  const [scannedSlot, setScannedSlot] = useState<TrayOption | null>(null);
 
   useEffect(() => {
     setKioskMode(isKioskMode());
@@ -102,6 +105,7 @@ export default function SpoolAssignPage({
       }
 
       setSpool(foundSpool);
+      rememberSpool(foundSpool.id);
 
       // Build tray options
       if (printersRes.ok) {
@@ -134,6 +138,9 @@ export default function SpoolAssignPage({
         }
 
         setTrays(trayOptions);
+        const slotKey = recentSlot();
+        const assignedTo = (foundSpool.extra?.['active_tray'] ?? '').replace(/^"|"$/g, '');
+        setScannedSlot(trayOptions.find(t => t.id === slotKey && t.id !== assignedTo) ?? null);
       }
     } catch (err) {
       // A fetch abort surfaces as an AbortError — swallow it, it's expected on
@@ -161,6 +168,7 @@ export default function SpoolAssignPage({
       });
 
       if (!res.ok) throw new Error('Failed to assign spool');
+      forgetScans();
 
       if (kioskMode) {
         const trayLabel = tray.amsName ? `${tray.amsName} — ${tray.label}` : tray.label;
@@ -371,13 +379,30 @@ export default function SpoolAssignPage({
               </CardContent>
             </Card>
 
+            {scannedSlot && (
+              <Card className="border-primary">
+                <CardHeader>
+                  <CardTitle>Put it in the slot you just scanned?</CardTitle>
+                  <CardDescription>
+                    {scannedSlot.printer} {scannedSlot.amsName ? `${scannedSlot.amsName} - ` : ''}{scannedSlot.label}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Button className="w-full" onClick={() => handleAssign(scannedSlot)} disabled={assigning}>
+                    {assigning && pendingTrayId === scannedSlot.id && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    Put it here
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Tray Selection */}
             {trays.length > 0 ? (
               <Card>
                 <CardHeader>
                   <CardTitle>Select Tray</CardTitle>
                   <CardDescription>
-                    Choose which AMS tray to assign this spool to
+                    Choose which AMS tray to assign this spool to, or scan the tag or QR code of the slot it goes in
                   </CardDescription>
                 </CardHeader>
                 <CardContent>

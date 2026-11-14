@@ -12,6 +12,7 @@ import type { Spool } from '@/lib/api/spoolman';
 import { QRCodeGenerator } from '@/components/qr-code-generator';
 import { NFCWriter } from '@/components/nfc-writer';
 import { NFCReader } from '@/components/nfc-reader';
+import { SlotTags } from '@/components/slot-tags';
 import { parseScanLink, slotPath, type ScanTarget } from '@/lib/scan-codes';
 import { useNfcBlocker } from '@/lib/use-nfc-blocker';
 
@@ -206,6 +207,19 @@ function ScanPageContent() {
               No spools found. Add spools to Spoolman to write NFC tags.
             </p>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Slot Tags */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Slot Tags</CardTitle>
+          <CardDescription>
+            Put a tag or QR code on each tray or storage slot. Scan a spool and then its slot, in either order, to assign it there.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <SlotTags directAccessPort={directAccessPort} qrBaseUrl={qrBaseUrl} />
         </CardContent>
       </Card>
 
