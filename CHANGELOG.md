@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - A Bambu PAHT-CF spool no longer shows a "Wrong spool?" warning (#102). Its tag reports the broader type PA-CF, so the material in the filament's name (Bambu PAHT-CF) now counts as a match as well.
 - Stopping or updating SpoolmanSync no longer cuts off a deduction being written (#94, contributed by @JanJoh). It finishes the write, saves the prints in progress and exits cleanly, within the stop timeout.
-- An empty external spool slot that briefly reports another spool's serial no longer moves that spool onto it (#93, contributed by @JanJoh). Since 2.0.0 that sent the next print's usage to the wrong tray. A tray holding a spool the printer has not identified ("?") keeps its assignment, and the log says so.
+- An empty external spool slot that briefly reports another spool's serial no longer moves that spool onto it (#93, contributed by @JanJoh), which took the spool off the tray it was really in, so its next print was flagged instead of deducted. A tray holding a spool the printer has not identified ("?") keeps its assignment, and the log says so.
 - The NFC writer says up front why it cannot write tags (#84): inside the Home Assistant sidebar or app, on an http:// page, or in a browser without Web NFC. From the sidebar it offers to open SpoolmanSync on its own page, and in every case a spool's link can still be copied for an NFC app such as NFC Tools.
 
 ## [2.0.1] - 2026-11-10
