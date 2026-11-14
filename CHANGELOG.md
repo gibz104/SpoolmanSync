@@ -5,7 +5,7 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-11-14
 
 > Upgrade note for H3C owners: once SpoolmanSync finds all nine AMS 3H trays, the dashboard asks you to reconfigure automations. Do it, so tray changes in trays 5 to 9 are picked up too.
 
