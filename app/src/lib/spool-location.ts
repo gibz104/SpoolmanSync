@@ -182,7 +182,8 @@ export function legacyTraySuffixes(
   if (isExternal) add('External');
 
   // An AMS 3H was listed as "AMS 1", with its first four trays only, until
-  // SpoolmanSync recognized it.
+  // SpoolmanSync recognized it: ha-bambulab 2.4 names its device "..._AMS_3H",
+  // which read as no unit number. (2.3 and earlier never registered one.)
   if (amsName === AMS_3H_NAME && trayNumber <= 4) {
     for (const g of [granularity, ...seenGranularities]) add(realTraySuffix('AMS 1', trayNumber, false, undefined, g));
   }
