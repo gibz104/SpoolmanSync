@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { isCrossSiteApiRequest } from '@/lib/request-guard';
 
 /**
- * Proxy (formerly middleware) to handle Home Assistant ingress path
+ * Proxy (formerly middleware). Refuses API requests that a browser makes for
+ * another site (see request-guard.ts), and handles the Home Assistant ingress
+ * path.
  *
  * When running as an HA add-on, requests come through the ingress proxy.
  * HA's ingress strips the base path before forwarding to the add-on, so
@@ -13,6 +16,10 @@ import type { NextRequest } from 'next/server';
  * for generating external URLs (e.g., QR codes, NFC tags).
  */
 export function proxy(request: NextRequest) {
+  if (isCrossSiteApiRequest(request.nextUrl.pathname, request.method, request.headers.get('sec-fetch-site'))) {
+    return NextResponse.json({ error: 'SpoolmanSync does not accept API requests from other websites' }, { status: 403 });
+  }
+
   const response = NextResponse.next();
 
   // Get the ingress path from the header
