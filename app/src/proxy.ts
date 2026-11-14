@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
 /**
- * Middleware to handle Home Assistant ingress path
+ * Proxy (formerly middleware) to handle Home Assistant ingress path
  *
  * When running as an HA add-on, requests come through the ingress proxy.
  * HA's ingress strips the base path before forwarding to the add-on, so
@@ -12,7 +12,7 @@ import type { NextRequest } from 'next/server';
  * We store this in a cookie so client-side code can access it if needed
  * for generating external URLs (e.g., QR codes, NFC tags).
  */
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const response = NextResponse.next();
 
   // Get the ingress path from the header
@@ -32,7 +32,7 @@ export function middleware(request: NextRequest) {
   return response;
 }
 
-// Run middleware on all routes except static files
+// Run on all routes except static files
 export const config = {
   matcher: [
     '/((?!_next/static|_next/image|favicon.ico).*)',
