@@ -24,11 +24,13 @@ import {
   AlertDescription,
   AlertTitle,
 } from '@/components/ui/alert';
-import { Nfc, CheckCircle2, XCircle, Loader2, AlertTriangle, Smartphone } from 'lucide-react';
+import { Nfc, CheckCircle2, XCircle, Loader2, AlertTriangle, Smartphone, Copy, ExternalLink } from 'lucide-react';
+import { toast } from 'sonner';
 import { SpoolColorSwatch } from '@/components/spool-color-swatch';
 import type { Spool } from '@/lib/api/spoolman';
 import { buildSpoolSearchValue, parseExtraValue } from '@/lib/api/spoolman';
 import { buildExternalUrl } from '@/lib/ingress-path';
+import { currentNfcBlocker, isSecureUrl, type NfcBlocker } from '@/lib/web-nfc';
 
 type SortBy = 'id' | 'name' | 'material' | 'vendor';
 
@@ -103,6 +105,97 @@ function sortSpools(spools: Spool[], sortBy: SortBy): Spool[] {
   });
 }
 
+/** Copy text, falling back to a hidden textarea where the Clipboard API is missing or refused (http://, an iframe). */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Refused, e.g. in an iframe without clipboard access: try the fallback.
+  }
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.style.position = 'fixed';
+  textArea.style.left = '-999999px';
+  document.body.appendChild(textArea);
+  textArea.select();
+  try {
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(textArea);
+  }
+}
+
+/** Why Web NFC cannot write tags on this page, and what to do instead. */
+function NfcBlockedNotice({ blocker, directUrl, linkTemplate }: { blocker: NfcBlocker; directUrl: string; linkTemplate: string }) {
+  const title = {
+    'companion-app': 'Open SpoolmanSync in a browser to write NFC tags',
+    insecure: 'Writing NFC tags needs an https:// address',
+    unsupported: 'Web NFC Not Available',
+    embedded: 'Open SpoolmanSync directly to write NFC tags',
+  }[blocker];
+
+  return (
+    <Alert>
+      <Smartphone className="h-4 w-4" />
+      <AlertTitle>{title}</AlertTitle>
+      <AlertDescription className="space-y-2">
+        {blocker === 'companion-app' && (
+          <p>
+            The Home Assistant app can&apos;t write NFC tags for a web page. Open SpoolmanSync in Chrome on
+            Android instead.
+          </p>
+        )}
+        {blocker === 'insecure' && (
+          <p>
+            Browsers only allow Web NFC on https:// pages, and only Chrome, Edge, Opera and Samsung Internet
+            on Android support it. Open SpoolmanSync through an https:// address, such as a reverse proxy.
+          </p>
+        )}
+        {blocker === 'unsupported' && (
+          <p>
+            Web NFC is only supported on <strong>Android</strong> with certain browsers
+            (Chrome, Edge, Opera, Samsung Internet). iOS, Firefox, and Brave do not support it.
+          </p>
+        )}
+        {blocker === 'embedded' && (
+          <p>
+            Chrome doesn&apos;t allow Web NFC inside the Home Assistant sidebar. Open SpoolmanSync on its own
+            page in Chrome on Android to write tags.
+          </p>
+        )}
+        {(blocker === 'embedded' || blocker === 'companion-app') && (
+          <>
+            <Button asChild variant="outline" size="sm">
+              <a href={directUrl} target="_blank" rel="noopener noreferrer">
+                <ExternalLink className="h-4 w-4 mr-2" />
+                Open SpoolmanSync directly
+              </a>
+            </Button>
+            {!isSecureUrl(directUrl) && (
+              <p className="text-xs text-muted-foreground">
+                That address is http://, and Web NFC needs https://. Put an https:// reverse proxy in front of
+                it, and enter that address under Settings, QR Code / NFC URL.
+              </p>
+            )}
+          </>
+        )}
+        <p className="text-xs text-muted-foreground">
+          Or write a spool&apos;s link with an NFC app such as NFC Tools: pick a spool below to copy its link.
+          The links have this form:
+        </p>
+        <p className="text-xs font-mono bg-muted p-2 rounded break-all select-all">
+          {linkTemplate}<span className="text-primary">[SPOOL_ID]</span>
+        </p>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
 function getSpoolFieldValue(spool: Spool, fieldKey: string): string | null {
   switch (fieldKey) {
     case 'material':
@@ -128,13 +221,14 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
   const [filters, setFilters] = useState<Record<string, string | null>>({});
   const [enabledFields, setEnabledFields] = useState<FilterField[]>([]);
   const [sortBy, setSortBy] = useState<SortBy>('id');
-  const [nfcSupported, setNfcSupported] = useState<boolean | null>(null);
+  // undefined while checking; null when this page can write tags.
+  const [blocker, setBlocker] = useState<NfcBlocker | null | undefined>(undefined);
   const [writeStatus, setWriteStatus] = useState<WriteStatus>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   // Check for NFC support on mount
   useEffect(() => {
-    setNfcSupported('NDEFReader' in window);
+    setBlocker(currentNfcBlocker());
   }, []);
 
   // Fetch filter fields on mount
@@ -185,8 +279,14 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
     setFilters({});
   };
 
+  const handleCopyLink = async () => {
+    if (!nfcUrl) return;
+    if (await copyText(nfcUrl)) toast.success('Link copied');
+    else toast.error('Could not copy the link; select it and copy it instead');
+  };
+
   const handleWriteNFC = async () => {
-    if (!nfcUrl || !window.NDEFReader) return;
+    if (!nfcUrl || blocker || !window.NDEFReader) return;
 
     setWriteStatus('writing');
     setErrorMessage('');
@@ -230,6 +330,8 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
           setErrorMessage('NFC transfer failed. Please try again.');
         } else if (err.name === 'AbortError') {
           setErrorMessage('NFC operation was cancelled.');
+        } else if (err.name === 'SecurityError') {
+          setErrorMessage('This page is not allowed to use NFC. Open SpoolmanSync on its own page in Chrome, not inside Home Assistant.');
         } else {
           setErrorMessage(err.message || 'Failed to write to NFC tag.');
         }
@@ -240,7 +342,7 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
   };
 
   // Show loading state while checking NFC support
-  if (nfcSupported === null) {
+  if (blocker === undefined) {
     return (
       <div className="flex items-center justify-center py-8">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -248,35 +350,16 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
     );
   }
 
-  // Show unsupported message for non-NFC browsers
-  if (!nfcSupported) {
-    const baseUrl = typeof window !== 'undefined' ? buildExternalUrl('/scan/spool/', directAccessPort, qrBaseUrl) : '/scan/spool/';
-
-    return (
-      <Alert>
-        <Smartphone className="h-4 w-4" />
-        <AlertTitle>Web NFC Not Available</AlertTitle>
-        <AlertDescription>
-          <p className="mb-2">
-            Web NFC is only supported on <strong>Android</strong> with certain browsers
-            (Chrome, Edge, Opera, Samsung Internet).
-          </p>
-          <p className="text-xs text-muted-foreground mb-3">
-            iOS, Firefox, and Brave do not support Web NFC. Use QR codes or a dedicated NFC writing app instead.
-          </p>
-          <p className="text-xs text-muted-foreground">
-            To write manually with another app, use this URL format:
-          </p>
-          <p className="text-xs font-mono bg-muted p-2 rounded mt-1 break-all select-all">
-            {baseUrl}<span className="text-primary">[SPOOL_ID]</span>
-          </p>
-        </AlertDescription>
-      </Alert>
-    );
-  }
-
   return (
     <div className="space-y-4">
+      {blocker && (
+        <NfcBlockedNotice
+          blocker={blocker}
+          directUrl={buildExternalUrl('/scan', directAccessPort, qrBaseUrl)}
+          linkTemplate={buildExternalUrl('/scan/spool/', directAccessPort, qrBaseUrl)}
+        />
+      )}
+
       {/* Filters & Sort */}
       {enabledFields.length > 0 ? (
         <SpoolFilterBar
@@ -386,6 +469,12 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
 
           {/* Buttons Row */}
           <div className="flex gap-2">
+            {blocker ? (
+              <Button onClick={handleCopyLink} className="flex-1">
+                <Copy className="h-4 w-4 mr-2" />
+                Copy Link
+              </Button>
+            ) : (
             <Button
               onClick={handleWriteNFC}
               disabled={writeStatus === 'writing'}
@@ -403,6 +492,7 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
                 </>
               )}
             </Button>
+            )}
             <Button
               variant="outline"
               onClick={() => {
@@ -415,14 +505,14 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
             </Button>
           </div>
 
-          {writeStatus === 'idle' && (
+          {!blocker && writeStatus === 'idle' && (
             <p className="text-xs text-muted-foreground text-center">
               Click the button, then hold your NFC tag near your phone's NFC reader.
             </p>
           )}
 
           {/* URL Preview */}
-          <p className="text-xs text-muted-foreground/70 text-center font-mono break-all">
+          <p className="text-xs text-muted-foreground/70 text-center font-mono break-all select-all">
             {nfcUrl}
           </p>
         </div>
@@ -432,7 +522,7 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
       {!selectedSpool && (
         <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
           <Nfc className="h-12 w-12 mb-3 opacity-50" />
-          <p className="text-sm">Select a spool above to write to an NFC tag</p>
+          <p className="text-sm">{blocker ? 'Select a spool above to copy its link' : 'Select a spool above to write to an NFC tag'}</p>
         </div>
       )}
 
