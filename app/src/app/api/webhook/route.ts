@@ -131,12 +131,16 @@ export async function POST(request: NextRequest) {
       const trayState = classifyTrayState(name);
 
       if (trayState === 'transient') {
+        // "?" is a spool the printer has not identified, which can last (see classifyTrayState).
+        const reason = name === '?' ? 'unidentified_spool' : 'transient_state';
         await createActivityLog({
           type: 'tray_change_ignored',
-          message: `Ignored transient tray state for ${tray_entity_id} (name="${name}") — assignment preserved`,
-          details: { trayId: tray_entity_id, reason: 'transient_state', name },
+          message: reason === 'unidentified_spool'
+            ? `Tray ${tray_entity_id} holds a spool the printer has not identified (name="?") — assignment preserved`
+            : `Ignored transient tray state for ${tray_entity_id} (name="${name}") — assignment preserved`,
+          details: { trayId: tray_entity_id, reason, name },
         });
-        return NextResponse.json({ status: 'ignored', reason: 'transient_state' });
+        return NextResponse.json({ status: 'ignored', reason });
       }
 
       if (trayState === 'empty') {
