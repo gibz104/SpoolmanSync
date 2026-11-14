@@ -5,6 +5,11 @@
 ARG BUILD_FROM
 FROM node:24-alpine AS base
 
+# npm 12 runs dependency install scripts only for the packages approved in
+# app/package.json's allowScripts; see app/Dockerfile.
+RUN npm install -g npm@12
+ENV CHECKPOINT_DISABLE=1
+
 # Install dependencies only when needed
 FROM base AS deps
 # Add build tools for native modules (better-sqlite3)
@@ -12,7 +17,13 @@ RUN apk add --no-cache libc6-compat python3 make g++
 WORKDIR /app
 
 COPY app/package.json app/package-lock.json* ./
-RUN npm ci
+RUN npm ci \
+ && npm install-scripts ls | tee /tmp/install-scripts \
+ && grep -q '^No packages with unreviewed install scripts' /tmp/install-scripts
+
+# Only what the app needs to run; see app/Dockerfile
+FROM deps AS prod-deps
+RUN npm prune --omit=dev
 
 # Build stage
 FROM base AS builder
@@ -33,6 +44,8 @@ ENV NODE_ENV=production
 # Shutdown is handled in src/instrumentation.ts
 ENV NEXT_MANUAL_SIG_HANDLE=true
 ENV HA_MODE=addon
+# Otherwise Prisma's CLI asks Prisma's servers about updates at every start.
+ENV CHECKPOINT_DISABLE=1
 
 # Install runtime dependencies
 RUN apk add --no-cache libc6-compat nginx bash jq curl
@@ -48,8 +61,8 @@ COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 COPY --from=builder /app/src/generated ./src/generated
 
-# Copy all node_modules from deps
-COPY --from=deps /app/node_modules ./node_modules
+# Copy the production node_modules (includes the Prisma CLI for migrations)
+COPY --from=prod-deps /app/node_modules ./node_modules
 
 # Copy nginx config and run script
 # Paths are relative to repo root (build context set in CI workflow)
