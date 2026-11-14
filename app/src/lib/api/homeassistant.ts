@@ -55,7 +55,7 @@ export interface HAPrinter {
 export interface HAAMS {
   entity_id: string;
   name: string;
-  ams_number: number;  // 1-4 for regular AMS, 128+ for AMS HT
+  ams_number: number;  // 1-4 for regular AMS, 33 for AMS 3H, 128+ for AMS HT
   trays: HATray[];
 }
 
@@ -799,7 +799,7 @@ export class HomeAssistantClient {
    * 2. Fetch all states via REST (for current values/attributes)
    * 3. Find printers: bambu_lab entities with translation_key === 'print_status'
    * 4. Walk device tree: printer → child devices (AMS, external spool) via via_device_id
-   * 5. Classify child device entities by translation_key (tray_1-4, external_spool, etc.)
+   * 5. Classify child device entities by translation_key (tray_1-9, external_spool, etc.)
    */
   async discoverPrinters(): Promise<HAPrinter[]> {
     const [registry, states] = await Promise.all([
@@ -859,10 +859,10 @@ export class HomeAssistantClient {
       for (const childDevice of childDevices) {
         const childEntities = deviceEntityMap.get(childDevice.id) || [];
 
-        // Check for tray entities (tray_1 through tray_4) → this is an AMS device
+        // Check for tray entities (tray_1 through tray_9) → this is an AMS device
         const trayEntities = childEntities.filter(e => {
           const key = getEffectiveTranslationKey(e);
-          return key !== null && /^tray_[1-4]$/.test(key);
+          return key !== null && /^tray_[1-9]$/.test(key);
         });
 
         // Check for external_spool entity → this is an External Spool device
@@ -871,14 +871,19 @@ export class HomeAssistantClient {
         );
 
         if (trayEntities.length > 0) {
-          const amsNumber = parseAmsNumber(childDevice);
+          // The AMS 3H (H3C's nine-tray unit) is its own device type. Detect it
+          // before numbering so it gets its special name and numeric id, and so
+          // it never falls through to the AMS HT path.
+          const isAms3h = isAms3hDevice(childDevice);
+          const amsNumber = isAms3h ? AMS_3H_NUMBER : parseAmsNumber(childDevice);
           const humidityEntity = childEntities.find(e =>
             getEffectiveTranslationKey(e) === 'humidity_index'
           );
 
           const ams: HAAMS = {
             entity_id: humidityEntity?.entity_id || trayEntities[0].entity_id,
-            name: amsNumber >= 128 ? `AMS HT${amsNumber > 128 ? ` ${amsNumber - 127}` : ''}` : `AMS ${amsNumber}`,
+            // The AMS 3H keeps its own display name, not the numeric "AMS 33".
+            name: isAms3h ? AMS_3H_NAME : amsNumber >= 128 ? `AMS HT${amsNumber > 128 ? ` ${amsNumber - 127}` : ''}` : `AMS ${amsNumber}`,
             ams_number: amsNumber,
             trays: [],
           };
@@ -1511,7 +1516,7 @@ function getEffectiveTranslationKey(entity: EntityRegistryEntry): string | null 
   // Fallback: extract known key from unique_id suffix (old ha-bambulab without translation_key)
   const knownKeys = [
     'print_status', 'print_weight', 'print_progress', 'print_length', 'subtask_name', 'gcode_file',
-    'tray_1', 'tray_2', 'tray_3', 'tray_4',
+    'tray_1', 'tray_2', 'tray_3', 'tray_4', 'tray_5', 'tray_6', 'tray_7', 'tray_8', 'tray_9',
     'external_spool', 'humidity_index', 'active_tray', 'stage',
   ];
   for (const key of knownKeys) {
@@ -1551,6 +1556,31 @@ function pickBestEntity(
 }
 
 /**
+ * The AMS 3H is ha-bambulab's nine-tray AMS variant (the H3C's unit). It is a
+ * distinct device type with its own display name and a stable numeric id.
+ *
+ * The numeric id is deliberately high (33) so it sorts after the regular AMS
+ * line (1-4) and never collides with AMS HT numbering: the upstream bus id is
+ * 32, and like regular AMS (firmware 0-based, ha-bambulab adds 1) we add 1, so
+ * 32 + 1 = 33.
+ */
+export const AMS_3H_NUMBER = 33;
+export const AMS_3H_NAME = 'AMS 3H';
+
+/**
+ * Detect the AMS 3H from the device registry. The upstream merged parser keys
+ * off both the HA device model and the original device name suffix ha-bambulab
+ * assigns. The `name` field is the integration-provided original name (stable,
+ * unaffected by user renames, which go into `name_by_user` instead), so an
+ * AMS 3H device is named "{Model}_{Serial}_AMS_3H".
+ */
+function isAms3hDevice(device: DeviceRegistryEntry): boolean {
+  const model = device.model || '';
+  const name = device.name || '';
+  return model === AMS_3H_NAME || /_AMS_3H$/.test(name);
+}
+
+/**
  * Determine AMS number from the device's original name.
  *
  * ha-bambulab constructs device names in the format "{Model}_{Serial}_AMS_{N}"
@@ -1563,6 +1593,7 @@ function pickBestEntity(
  * NOT the constructed name, so we can't use that for AMS numbering.
  *
  * Regular AMS: indices 1-4 (firmware 0-based, ha-bambulab adds 1)
+ * AMS 3H: handled separately (isAms3hDevice), does not reach this function
  * AMS HT: indices 128-135 (firmware 0x80-0x87, used as-is)
  * AMS Lite: index 1 (single unit)
  */
