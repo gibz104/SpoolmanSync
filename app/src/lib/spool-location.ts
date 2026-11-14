@@ -18,7 +18,7 @@
  *   changed by hand is left alone.
  */
 import prisma from '@/lib/db';
-import { HomeAssistantClient } from '@/lib/api/homeassistant';
+import { AMS_3H_NAME, HomeAssistantClient } from '@/lib/api/homeassistant';
 import { getVirtualPrinters, virtualSlotKey } from '@/lib/virtual-printers';
 import {
   SPOOLMAN_LOCATION_MAX,
@@ -180,6 +180,12 @@ export function legacyTraySuffixes(
 
   // An external slot was always "External" before dual-nozzle slots were numbered.
   if (isExternal) add('External');
+
+  // An AMS 3H was listed as "AMS 1", with its first four trays only, until
+  // SpoolmanSync recognized it.
+  if (amsName === AMS_3H_NAME && trayNumber <= 4) {
+    for (const g of [granularity, ...seenGranularities]) add(realTraySuffix('AMS 1', trayNumber, false, undefined, g));
+  }
 
   // Labels written while a different granularity was selected.
   for (const seen of seenGranularities) {

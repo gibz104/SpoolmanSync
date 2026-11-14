@@ -4,6 +4,7 @@ vi.mock('@/lib/db', () => ({ default: {} }));
 
 const { HomeAssistantClient, AMS_3H_NAME, AMS_3H_NUMBER } = await import('./api/homeassistant');
 const { watchFor } = await import('./usage/printers');
+const { legacyTraySuffixes } = await import('./spool-location');
 import type { HAPrinter } from './api/homeassistant';
 
 /**
@@ -19,8 +20,10 @@ import type { HAPrinter } from './api/homeassistant';
  *   - the AMS 3H is recognized by model OR original-device-name suffix
  *   - invalid tray numbers (0, >9) are rejected
  *   - normal AMS and AMS HT discovery and naming are untouched
- *   - watchFor registers both the display-name label ("AMS 3H Tray N") and the
- *     upstream index-based alias ("AMS 33 Tray N") for the same tray key
+ *   - watchFor gives AMS 3H trays no slicer name, since ha-bambulab names none
+ *     in print_weight's attributes, and keeps the AMS and AMS HT names
+ *   - location labels written while the AMS 3H was listed as "AMS 1" are
+ *     recognized as SpoolmanSync's own
  */
 
 type Registry = { entities: Record<string, unknown>[]; devices: Record<string, unknown>[] };
@@ -222,7 +225,7 @@ describe('AMS 3H discovery', () => {
 });
 
 describe('watchFor / AMS 3H slicer names', () => {
-  it('maps the AMS 3H display-name label and the AMS 33 alias to the right tray keys', () => {
+  it('gives AMS 3H trays no slicer name, as ha-bambulab names none', () => {
     const printer: HAPrinter = {
       brand: 'bambu_lab',
       entity_id: 'sensor.h3c_print_status',
@@ -233,7 +236,7 @@ describe('watchFor / AMS 3H slicer names', () => {
         entity_id: 'sensor.h3c_ams_3h_humidity',
         name: AMS_3H_NAME,
         ams_number: AMS_3H_NUMBER,
-        trays: [1, 2, 3].map(n => ({
+        trays: [1, 2, 3, 9].map(n => ({
           entity_id: `sensor.h3c_ams_3h_tray_${n}`,
           unique_id: `H3C_${SERIAL}_AMS_${AMS_SERIAL}_tray_${n}`,
           tray_number: n,
@@ -243,13 +246,9 @@ describe('watchFor / AMS 3H slicer names', () => {
     };
 
     const watch = watchFor(printer)!;
-    expect(watch.trays.map(t => t.label)).toEqual(['AMS 3H Tray 1', 'AMS 3H Tray 2', 'AMS 3H Tray 3']);
-
-    for (const n of [1, 2, 3]) {
-      const key = `H3C_${SERIAL}_AMS_${AMS_SERIAL}_tray_${n}`;
-      expect(watch.slicerNames[`AMS 3H Tray ${n}`]).toBe(key);
-      expect(watch.slicerNames[`AMS 33 Tray ${n}`]).toBe(key);
-    }
+    expect(watch.trays.map(t => t.label)).toEqual(['AMS 3H Tray 1', 'AMS 3H Tray 2', 'AMS 3H Tray 3', 'AMS 3H Tray 9']);
+    expect(watch.trays.map(t => t.key)).toEqual([1, 2, 3, 9].map(n => `H3C_${SERIAL}_AMS_${AMS_SERIAL}_tray_${n}`));
+    expect(watch.slicerNames).toEqual({});
   });
 
   it('keeps the normal AMS and AMS HT slicer names for other units', () => {
@@ -281,64 +280,25 @@ describe('watchFor / AMS 3H slicer names', () => {
     };
 
     const watch = watchFor(printer)!;
-    expect(watch.slicerNames['AMS 1 Tray 1']).toBe('H2D_SERIAL_AMS_1_tray_1');
-    expect(watch.slicerNames['AMS 1 Tray 2']).toBe('H2D_SERIAL_AMS_1_tray_2');
-    expect(watch.slicerNames['AMS HT 1']).toBe('H2D_SERIAL_AMS_128_tray_1');
+    expect(watch.slicerNames).toEqual({
+      'AMS 1 Tray 1': 'H2D_SERIAL_AMS_1_tray_1',
+      'AMS 1 Tray 2': 'H2D_SERIAL_AMS_1_tray_2',
+      'AMS HT 1': 'H2D_SERIAL_AMS_128_tray_1',
+    });
+  });
+});
+
+describe('AMS 3H location labels', () => {
+  it('recognizes the "AMS 1" labels written for its first four trays before it was recognized', () => {
+    expect(legacyTraySuffixes(AMS_3H_NAME, 2, false)).toEqual(['AMS 1 Tray 2']);
+    expect(legacyTraySuffixes(AMS_3H_NAME, 4, false, undefined, 'ams', ['ams'])).toEqual(['AMS 1']);
+    expect(legacyTraySuffixes(AMS_3H_NAME, 4, false, undefined, 'ams', ['tray', 'ams']))
+      .toEqual(['AMS 1', 'AMS 1 Tray 4', 'AMS 3H Tray 4']);
   });
 
-  it('keeps a Creality CFS box numbered 33 from being named as an AMS 3H', () => {
-    const printer: HAPrinter = {
-      brand: 'creality',
-      entity_id: 'sensor.k2_print_status',
-      name: 'K2',
-      state: 'idle',
-      prefix: 'k2_serial',
-      ams_units: [{
-        entity_id: 'sensor.k2_cfs_box_33_humidity',
-        name: 'CFS Box 33',
-        ams_number: 33,
-        trays: [1, 2].map(n => ({
-          entity_id: `sensor.k2_cfs_box_33_slot_${n}`,
-          unique_id: `K2_SERIAL_cfs_box_33_slot_${n}`,
-          tray_number: n,
-        })),
-      }],
-      external_spools: [],
-    };
-
-    const watch = watchFor(printer)!;
-    // Creality trays keep a 'Slot' label, so the box number must not surface as "AMS 3H".
-    expect(watch.trays.map(t => t.label)).toEqual(['CFS Box 33 Slot 1', 'CFS Box 33 Slot 2']);
-    // The CFS box falls through to the generic AMS numbering style...
-    expect(watch.slicerNames['AMS 33 Tray 1']).toBe('K2_SERIAL_cfs_box_33_slot_1');
-    expect(watch.slicerNames['AMS 33 Tray 2']).toBe('K2_SERIAL_cfs_box_33_slot_2');
-    // ...and registers no AMS 3H alias for it.
-    expect(watch.slicerNames['AMS 3H Tray 1']).toBeUndefined();
-  });
-
-  it('keeps a Bambu generic AMS numbered 33 from being named as an AMS 3H', () => {
-    const printer: HAPrinter = {
-      brand: 'bambu_lab',
-      entity_id: 'sensor.h2d_print_status',
-      name: 'H2D',
-      state: 'idle',
-      prefix: 'h2d_serial',
-      ams_units: [{
-        entity_id: 'sensor.h2d_ams_33_humidity',
-        name: 'AMS 33',
-        ams_number: 33,
-        trays: [1].map(n => ({
-          entity_id: `sensor.h2d_ams_33_tray_${n}`,
-          unique_id: `H2D_SERIAL_AMS_33_tray_${n}`,
-          tray_number: n,
-        })),
-      }],
-      external_spools: [],
-    };
-
-    const watch = watchFor(printer)!;
-    // A Bambu unit that is genuinely named "AMS 33" keeps its generic numbering.
-    expect(watch.slicerNames['AMS 33 Tray 1']).toBe('H2D_SERIAL_AMS_33_tray_1');
-    expect(watch.slicerNames['AMS 3H Tray 1']).toBeUndefined();
+  it('claims no label for trays 5-9, which were never listed, or for a real AMS 1', () => {
+    expect(legacyTraySuffixes(AMS_3H_NAME, 5, false)).toEqual([]);
+    expect(legacyTraySuffixes(AMS_3H_NAME, 9, false, undefined, 'tray', ['tray', 'ams'])).toEqual(['AMS 3H']);
+    expect(legacyTraySuffixes('AMS 1', 2, false)).toEqual([]);
   });
 });

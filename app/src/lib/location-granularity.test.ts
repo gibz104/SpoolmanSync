@@ -19,6 +19,7 @@ vi.mock('@/lib/db', () => {
 
 const discoverPrinters = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/api/homeassistant', () => ({
+  AMS_3H_NAME: 'AMS 3H',
   HomeAssistantClient: { fromConnection: async () => ({ discoverPrinters }) },
 }));
 

@@ -1101,6 +1101,90 @@ describe('Dual-nozzle H2D', () => {
   });
 });
 
+describe('H3C with an AMS 3H', () => {
+  // ha-bambulab names no AMS 3H tray in print_weight's attributes (as of 2.4),
+  // so a print from one is billed by which tray fed when, never by a split.
+  const H3C = {
+    status: 'sensor.h3c_print_status',
+    progress: 'sensor.h3c_print_progress',
+    weight: 'sensor.h3c_print_weight',
+    name: 'sensor.h3c_subtask_name',
+    file: 'sensor.h3c_gcode_file',
+    tray: (n: number) => `sensor.h3c_ams_3h_tray_${n}`,
+    key: (n: number) => `H3C_SERIAL_AMS_N10ASERIAL_tray_${n}`,
+  };
+  const TRAYS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+  /** A 50 g print fed by `feed` ([progress, tray] switches), with print_weight's attributes as given. */
+  async function h3cPrint(attributes: Record<string, number>, feed: Array<[number, number]>, outcome: 'finish' | 'failed' = 'finish', endAt = 100) {
+    const step = async (ms: number) => { ha.tick(ms); await flush(); };
+    const active = (n: number) => { for (const m of TRAYS) ha.attr(H3C.tray(m), { active: m === n }); };
+    ha.set(H3C.status, 'prepare');
+    ha.set(H3C.name, 'nine');
+    ha.set(H3C.file, 'nine.gcode.3mf');
+    await step(1_000);
+    active(feed[0][1]);
+    await step(30_000);
+    ha.set(H3C.progress, 0);
+    ha.set(H3C.status, 'running');
+    await step(5_000);
+    ha.set(H3C.weight, 50, attributes);
+    await step(1_000);
+    for (let pct = 1; pct <= endAt; pct++) {
+      active(feed.filter(([at]) => at < pct).at(-1)![1]);
+      ha.set(H3C.progress, pct);
+      await step(30_000);
+    }
+    ha.set(H3C.status, outcome);
+    await step(1_000);
+  }
+
+  beforeEach(async () => {
+    printers = [{
+      brand: 'bambu_lab', entity_id: H3C.status, name: 'H3C', state: 'idle', prefix: 'h3c_serial',
+      ams_units: [{
+        entity_id: 'sensor.h3c_ams_3h_humidity', name: 'AMS 3H', ams_number: 33,
+        trays: TRAYS.map(n => ({ entity_id: H3C.tray(n), unique_id: H3C.key(n), tray_number: n })),
+      }],
+      external_spools: [],
+      print_weight_entity: H3C.weight, print_progress_entity: H3C.progress,
+      job_name_entity: H3C.name, gcode_file_entity: H3C.file,
+    }];
+    spoolman.add(57, H3C.key(7));
+    spoolman.add(59, H3C.key(9));
+    ha.set(H3C.status, 'finish');
+    ha.set(H3C.progress, 100);
+    ha.set(H3C.weight, 0, {});
+    ha.set(H3C.name, 'unknown');
+    ha.set(H3C.file, 'unknown');
+    for (const n of TRAYS) ha.set(H3C.tray(n), 'PLA Basic', { active: false, name: 'PLA Basic', type: 'PLA' });
+    await boot();
+  });
+
+  it('bills a finished print from trays past the fourth by which fed when', async () => {
+    await h3cPrint({}, [[0, 7], [40, 9]]);
+    expect(spoolman.used(57)).toBe(20);
+    expect(spoolman.used(59)).toBe(30);
+    expect(await attention()).toBe('');
+  });
+
+  it('bills a failed print for what each tray fed', async () => {
+    await h3cPrint({}, [[0, 9], [20, 7]], 'failed', 60);
+    expect(spoolman.used(59)).toBe(10);
+    expect(spoolman.used(57)).toBe(20);
+  });
+
+  it('does not settle to a split that files its trays under another unit\'s names', async () => {
+    // Should ha-bambulab number an AMS 3H's slots as an AMS HT's or a regular AMS's.
+    await h3cPrint({ 'AMS HT 7': 50 }, [[0, 7], [40, 9]]);
+    expect(spoolman.used(57)).toBe(20);
+    expect(spoolman.used(59)).toBe(30);
+    await h3cPrint({ 'AMS 2 Tray 3': 25, 'AMS 3 Tray 1': 25 }, [[0, 9], [80, 7]]);
+    expect(spoolman.used(59)).toBe(30 + 40);
+    expect(spoolman.used(57)).toBe(20 + 10);
+  });
+});
+
 describe('Creality', () => {
   const grams = (mmTotal: number) => filamentWeight(cm(mmTotal), { density: 1.24, diameter: 1.75 });
 
