@@ -92,7 +92,7 @@ export function isActivePrintState(state: string | null | undefined): boolean {
  * for auto-assign. Seen on X1C firmware 01.12 with an AMS HT: the empty
  * external spool slot briefly (~1s) reports the HT spool's tray_uuid while
  * still flagging `empty: true`, which would otherwise move the spool off the
- * HT and charge the next print's usage to the wrong tray.
+ * HT, leaving the HT's next print with no spool to deduct from.
  *
  * Up to ha-bambulab 2.3, an external spool also reads `empty: true` whenever
  * it is not the one feeding, even with a spool mounted. That loses nothing:
