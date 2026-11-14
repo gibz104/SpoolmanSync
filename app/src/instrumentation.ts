@@ -5,8 +5,11 @@
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return;
-  const { startUsageTracker } = await import('./lib/usage/tracker');
-  startUsageTracker().catch(err => console.error('[usage] Could not start the usage tracker:', err));
+  // First: with NEXT_MANUAL_SIG_HANDLE set, Next.js installs no handler of its
+  // own, and node runs as PID 1 in the image, which ignores a signal nothing
+  // handles. Were the tracker to fail to load, a stop would hang until killed.
   const { handleShutdownSignals } = await import('./lib/shutdown');
   handleShutdownSignals();
+  const { startUsageTracker } = await import('./lib/usage/tracker');
+  startUsageTracker().catch(err => console.error('[usage] Could not start the usage tracker:', err));
 }
