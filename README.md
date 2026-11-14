@@ -31,7 +31,9 @@ Pick the option that matches your setup:
 
 ### Option 1: Home Assistant Add-on (recommended for HA OS / Supervised)
 
-1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories**
+[![Open your Home Assistant instance and show the add app repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fgibz104%2FSpoolmanSync)
+
+1. **Settings → Apps → Install app → ⋮ → Repositories** (before Home Assistant 2026.2: **Settings → Add-ons → Add-on Store → ⋮ → Repositories**)
 2. Add `https://github.com/gibz104/SpoolmanSync`
 3. Install **SpoolmanSync**, start it, and enable **Show in sidebar**
 4. Open from the sidebar and configure Spoolman URL in Settings
@@ -116,7 +118,7 @@ Alerts fire only when you're on your *last* spool of a group — no noise from p
 
 **Tray changes not picked up** — tray changes reach SpoolmanSync through the generated automations' webhook (usage tracking does not use it). Make sure you clicked **Mark as Configured** after adding automations (external mode), and that HA can reach SpoolmanSync at the URL you entered. Use your machine's IP, not `localhost`, if HA is on a different machine.
 
-**QR scanner or NFC not working** — browsers require HTTPS for camera and NFC access from non-`localhost` addresses. Use a reverse proxy, Tailscale, or access via `http://localhost:3000` on the same machine. Web NFC is Android-only (Chrome, Edge, Opera, Samsung Internet).
+**QR scanner or NFC not working** — browsers require HTTPS for camera and NFC access from non-`localhost` addresses. Use a reverse proxy, Tailscale, or access via `http://localhost:3000` on the same machine. Web NFC is Android-only (Chrome, Edge, Opera, Samsung Internet), and Chrome does not allow it inside the Home Assistant sidebar or the Home Assistant app: to write tags from the add-on, open SpoolmanSync on its own page over HTTPS, for example through a reverse proxy to the add-on's direct port (enter its address under **Settings → QR Code / NFC URL**, and keep it off the internet unless it sits behind authentication). On iOS, or anywhere else Web NFC is missing, the NFC writer copies a spool's link for an app such as NFC Tools instead.
 
 **Creality filament weight looks wrong** — ha_creality_ws reports filament usage as a length, which SpoolmanSync converts to weight with the density and diameter of the spool's filament in Spoolman. Check those values in Spoolman if a spool's deductions look off.
 
@@ -130,9 +132,11 @@ Alerts fire only when you're on your *last* spool of a group — no noise from p
 
 **Does it work with non-Bambu filament?** Yes, filament from any vendor works. Assign a spool by clicking a tray, or by QR code or NFC; only Bambu Lab spools with RFID tags are matched automatically.
 
-**How accurate is the filament usage?** A finished Bambu Lab print is charged exactly the slicer's per-tray figures. A cancelled print is charged by how far it got, and Creality usage comes from the length the printer reports extruding.
+**How accurate is the filament usage?** A finished Bambu Lab print is charged exactly the slicer's per-tray figures (on an AMS 3H, whose split ha-bambulab does not report, the slicer's total is shared out by which tray fed when). A cancelled print is charged by how far it got, and Creality usage comes from the length the printer reports extruding.
 
 **Do I need to edit YAML?** No. In add-on and embedded mode one click sets up the tray-change automations; in external mode you paste the generated YAML once. Usage tracking needs no YAML at all.
+
+**Why isn't SpoolmanSync in HACS?** HACS installs things that run inside Home Assistant itself, such as integrations and dashboard cards. SpoolmanSync is an app (an add-on) with its own container, which HACS cannot install, so it comes from its own app repository; adding the repository is a one-time step.
 
 **Can I run more than one SpoolmanSync?** Run one per Home Assistant and Spoolman. Every connected instance deducts usage, so a second one would deduct each print again.
 
