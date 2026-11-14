@@ -17,7 +17,7 @@ No YAML editing. No Home Assistant expertise required.
 - **Multi-brand support** — Bambu Lab and Creality printers side-by-side on one dashboard
 - **Automatic usage tracking** — deducts the filament each tray uses as a print runs, settles a finished print to the slicer's per-tray figures (purge and prime tower included), and charges a cancelled print only for what it printed
 - **Print history** — every print listed under **Reports → Recent Prints** with what it deducted from which spool; anything that cannot be accounted for is flagged instead of guessed
-- **QR & NFC** — scan Spoolman QR codes, print your own QR labels, or write NFC stickers for instant assignment
+- **QR & NFC** — scan Spoolman QR codes, print your own QR labels, or write NFC stickers for instant assignment; tag trays and storage slots too, so scanning a spool and then its slot assigns it, and look up tags you linked to spools in Spoolman 0.27+
 - **Kiosk mode** — a touchscreen spool-scanning station (a Raspberry Pi by the printer, say)
 - **Low stock alerts** — Home Assistant notifications when you're down to your last spool of a type
 - **Multi-AMS / multi-CFS** — works with any combination of units per printer
@@ -99,7 +99,7 @@ The generated Home Assistant automations only report tray changes, for RFID auto
 Spool matching works in three ways:
 - **Manual assignment** (all vendors) — click a tray, pick a spool
 - **RFID auto-match** (Bambu Lab spools with tags) — remembers which physical spool is which for future swaps. Creality CFS reports a material-type code rather than a per-spool serial, so Creality spools are matched by their tray assignment instead
-- **QR code / NFC** (any vendor) — scan printed QR labels or NFC stickers with your phone to assign
+- **QR code / NFC** (any vendor) — scan printed QR labels or NFC stickers with your phone to assign, or scan a spool and then the tag of the tray or storage slot it goes in. NFC tags linked to spools in Spoolman (0.27 or later) are recognized too, and tags SpoolmanSync writes are linked there
 
 ## Low Stock Alerts
 

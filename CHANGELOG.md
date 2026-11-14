@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > Upgrade note for H3C owners: once SpoolmanSync finds all nine AMS 3H trays, the dashboard asks you to reconfigure automations. Do it, so tray changes in trays 5 to 9 are picked up too.
 
 ### Added
+- Spoolman's own NFC tags (#89). Spoolman 0.27 links a tag to a spool by the tag's ID, and SpoolmanSync now recognizes those tags: tap one on the Scan page's new **Read NFC Tag** card (Chrome on Android), type its ID under **Manual Entry**, or read it with a kiosk's USB reader, and that spool opens. A tag Spoolman doesn't know yet can be linked to a spool right there. Tags written with SpoolmanSync's NFC writer are linked to their spool in Spoolman too, so Spoolman, and tools that read tags through it, know them as well.
+- Tags and QR codes for trays and storage slots (#97). The Scan page's new **Slot Tags** card gives every AMS tray, external spool and storage slot a link to write to a tag or show as a QR code. Scan a spool and then the slot it goes in, in either order within ten minutes, and SpoolmanSync offers to assign it there in one tap. This works on an iPhone too, with tags written by an app such as NFC Tools.
 - Bambu Lab H3C with the AMS 3H (#98, contributed by @sepffuzzball in #99). All nine trays are listed, assignable and tracked; until now only the first four showed, as "AMS 1". ha-bambulab does not report the slicer's per-tray split for the AMS 3H, so a finished multi-colour print from it is shared out by which tray fed when. Spoolman locations written while it showed as "AMS 1" move to "AMS 3H".
 
 ### Fixed
