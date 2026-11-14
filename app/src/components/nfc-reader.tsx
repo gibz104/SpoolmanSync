@@ -53,11 +53,16 @@ export function NFCReader({ spools }: { spools: Spool[] }) {
     if (handled.current) return;
     handled.current = true;
     scan.current?.abort(); // one tag at a time
+    const uid = normalizeTagUid(event.serialNumber ?? '');
     for (const text of recordTexts(event)) {
       const target = parseScanLink(text);
-      if (target) return router.push(scanTargetPath(target));
+      if (!target) continue;
+      // A sticker written before tags were linked in Spoolman says which spool
+      // it is on, so Spoolman learns its UID now, without rewriting it. Never
+      // taken from a spool Spoolman already has it linked to.
+      if (target.kind === 'spool' && uid) void linkReadTag(target.id, uid);
+      return router.push(scanTargetPath(target));
     }
-    const uid = normalizeTagUid(event.serialNumber ?? '');
     if (!uid) {
       setState({ step: 'error', message: 'This tag holds no spool link and reports no ID to look up.' });
       return;
@@ -69,6 +74,20 @@ export function NFCReader({ spools }: { spools: Spool[] }) {
       else setState({ step: 'unlinked', uid });
     } catch {
       setState({ step: 'error', message: 'Could not look the tag up in Spoolman.' });
+    }
+  };
+
+  const linkReadTag = async (spoolId: number, uid: string) => {
+    try {
+      const res = await fetch('/api/spools/tag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spoolId, uid, move: false }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.linked) toast.success(`Spoolman now knows this tag as spool #${spoolId}`);
+    } catch {
+      // Best effort: the tag opened its spool either way.
     }
   };
 

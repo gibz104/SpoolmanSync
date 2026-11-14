@@ -122,6 +122,14 @@ describe('linkTagUid', () => {
     expect(f.calls).toEqual(['POST /spool/3/tag', 'DELETE /spool/1/tag/04A2B3C4', 'POST /spool/3/tag']);
   });
 
+  it('leaves a tag another spool holds where it is when told not to move it', async () => {
+    const f = fake('0.27.1', [['04A2B3C4', { spool: 1 }]]);
+    install(f);
+    await expect(client().linkTagUid(3, '04A2B3C4', { move: false })).rejects.toBeInstanceOf(TagHeldError);
+    expect(f.tags.get('04A2B3C4')).toEqual({ spool: 1 });
+    expect(f.calls).toEqual(['POST /spool/3/tag']);
+  });
+
   it('leaves a tag that identifies a filament where it is', async () => {
     const f = fake('0.27.1', [['04A2B3C4', { filament: 5 }]]);
     install(f);

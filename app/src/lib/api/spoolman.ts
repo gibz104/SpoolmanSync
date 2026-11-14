@@ -570,11 +570,12 @@ export class SpoolmanClient {
 
   /**
    * Link a tag to a spool in Spoolman (0.27+), so its UID identifies the
-   * spool there too. A tag another spool holds is moved: it now carries this
-   * spool's link, or the user picked this spool for it. Throws TagHeldError
-   * for a tag that identifies something else, such as a filament.
+   * spool there too. A tag another spool holds is moved, unless `move` is
+   * false: it now carries this spool's link, or the user picked this spool for
+   * it. Throws TagHeldError for a tag it leaves where it is, and for one that
+   * identifies something else, such as a filament.
    */
-  async linkTagUid(spoolId: number, uid: string): Promise<{ movedFrom: number | null }> {
+  async linkTagUid(spoolId: number, uid: string, { move = true } = {}): Promise<{ movedFrom: number | null }> {
     const target = normalizeTagUid(uid);
     if (!target) throw new Error(`"${uid}" is not a tag UID`);
     const link = () => this.request(`/spool/${spoolId}/tag`, { method: 'POST', body: JSON.stringify({ uid: target }) });
@@ -582,7 +583,7 @@ export class SpoolmanClient {
     let response = await link();
     if (response.status === 409) {
       const holder = await response.json().catch(() => ({})) as { message?: string; spool_id?: number | null };
-      if (typeof holder.spool_id !== 'number' || holder.spool_id === spoolId) {
+      if (!move || typeof holder.spool_id !== 'number' || holder.spool_id === spoolId) {
         throw new TagHeldError(holder.message || 'Spoolman has this tag linked to something else.');
       }
       await this.unlinkTagUid(holder.spool_id, target);

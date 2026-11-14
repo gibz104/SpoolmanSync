@@ -7,11 +7,12 @@ import { normalizeTagUid } from '@/lib/scan-codes';
 /**
  * Link an NFC tag to a spool in Spoolman (0.27+, #89), so the tag's UID
  * identifies the spool in Spoolman and in tools that read tags through it.
- * `{ supported: false }` when Spoolman is older.
+ * `{ supported: false }` when Spoolman is older. With `move: false` (a tag
+ * being read, not written), a tag Spoolman already knows is left alone.
  */
 export async function POST(request: NextRequest) {
   try {
-    const { spoolId, uid } = await request.json();
+    const { spoolId, uid, move } = await request.json();
     if (typeof spoolId !== 'number' || !Number.isFinite(spoolId)) {
       return NextResponse.json({ error: 'spoolId is required and must be a number' }, { status: 400 });
     }
@@ -27,7 +28,14 @@ export async function POST(request: NextRequest) {
     const client = new SpoolmanClient(spoolmanConnection.url);
     if (!(await client.supportsTagUids())) return NextResponse.json({ supported: false });
 
-    const { movedFrom } = await client.linkTagUid(spoolId, tagUid);
+    // A tag that is only being read is linked if Spoolman doesn't know it yet,
+    // and left alone (no write) if it does, whichever spool that is.
+    if (move === false) {
+      const holder = await client.findSpoolByTagUid(tagUid);
+      if (holder) return NextResponse.json({ supported: true, linked: false, heldBy: holder.id });
+    }
+
+    const { movedFrom } = await client.linkTagUid(spoolId, tagUid, { move: move !== false });
     await createActivityLog({
       type: 'tag_linked',
       message: movedFrom !== null
