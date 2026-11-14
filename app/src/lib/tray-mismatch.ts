@@ -43,6 +43,17 @@ export function baseMaterialToken(material: string | undefined | null): string {
 }
 
 /**
+ * The material a tray's filament name gives, when that is narrower than the
+ * type the printer reports: Bambu's PAHT-CF tag reports the type "PA-CF",
+ * while ha-bambulab names the filament "Bambu PAHT-CF" (issue #102). Names
+ * read "<vendor> <material> [<variant>]", so the material is the second word;
+ * taking only that one keeps "Bambu Support For PLA" from passing as PLA.
+ */
+export function namedMaterialToken(name: string | undefined | null): string {
+  return baseMaterialToken((name || '').trim().split(/\s+/)[1]);
+}
+
+/**
  * Bare 6-char RGB hex for comparison.
  *
  * Tolerates a leading '#' on either side and an RFID alpha suffix
@@ -122,11 +133,13 @@ export function detectTrayMismatch(
   const spoolColor = normalizeHexColor(assignedSpool.filament?.color_hex);
 
   // Only compare when BOTH sides have a value — a missing value is unknown,
-  // not a disagreement.
+  // not a disagreement. A spool matching the filament the tray names agrees
+  // too, though the reported type is broader.
   const materialMismatch =
     !!basePrinterMaterial &&
     !!baseSpoolMaterial &&
-    basePrinterMaterial !== baseSpoolMaterial;
+    basePrinterMaterial !== baseSpoolMaterial &&
+    namedMaterialToken(tray.name) !== baseSpoolMaterial;
 
   const colorMismatch = !options.ignoreColor && !!rfidColor && !!spoolColor && rfidColor !== spoolColor;
 

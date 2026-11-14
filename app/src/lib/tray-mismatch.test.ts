@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectTrayMismatch, baseMaterialToken, normalizeHexColor } from './tray-mismatch';
+import { detectTrayMismatch, baseMaterialToken, namedMaterialToken, normalizeHexColor } from './tray-mismatch';
 import type { HATray } from './api/homeassistant';
 import type { Spool } from './api/spoolman';
 
@@ -98,6 +98,34 @@ describe('detectTrayMismatch — no warning when things actually agree', () => {
     expect(detectTrayMismatch(tray(), spool('', '042f56'))).toBeNull();
     expect(detectTrayMismatch(tray({ color: undefined }), spool('PLA', '042f56'))).toBeNull();
     expect(detectTrayMismatch(tray(), spool('PLA', null))).toBeNull();
+  });
+});
+
+describe('detectTrayMismatch — a tag reporting a broader type than the filament it names (#102)', () => {
+  // Bambu's PAHT-CF tag reports the type PA-CF; ha-bambulab names it from the tag's filament id.
+  const pahtCf = tray({ name: 'Bambu PAHT-CF', material: 'PA-CF', color: '#000000ff' });
+
+  it('takes the material from the second word of the name', () => {
+    expect(namedMaterialToken('Bambu PAHT-CF')).toBe('PAHT-CF');
+    expect(namedMaterialToken('Bambu PETG HF')).toBe('PETG');
+    expect(namedMaterialToken('Bambu Support For PLA')).toBe('SUPPORT');
+    expect(namedMaterialToken('PLA')).toBe('');
+    expect(namedMaterialToken(undefined)).toBe('');
+  });
+
+  it('accepts a spool of the named filament, or of the reported type', () => {
+    expect(detectTrayMismatch(pahtCf, spool('PAHT-CF', '000000'))).toBeNull();
+    expect(detectTrayMismatch(pahtCf, spool('PA-CF', '000000'))).toBeNull();
+  });
+
+  it('still flags a spool of neither', () => {
+    expect(detectTrayMismatch(pahtCf, spool('PA6-CF', '000000'))?.type).toBe('material');
+    expect(detectTrayMismatch(pahtCf, spool('PETG', '000000'))?.type).toBe('material');
+  });
+
+  it('does not read a support filament as the material it supports', () => {
+    const support = tray({ name: 'Bambu Support For PLA', material: 'PLA-S' });
+    expect(detectTrayMismatch(support, spool('PLA', '042f56'))?.type).toBe('material');
   });
 });
 
