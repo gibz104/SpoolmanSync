@@ -55,6 +55,10 @@ export async function POST(request: NextRequest) {
 
     const client = new SpoolmanClient(spoolmanConnection.url);
 
+    // One Home Assistant client for the whole request, made when first needed.
+    let haClientPromise: Promise<HomeAssistantClient | null> | null = null;
+    const getHaClient = () => (haClientPromise ??= HomeAssistantClient.fromConnection());
+
     // Resolve entity_id → unique_id for tray matching.
     // Spool assignments are stored by unique_id (stable across entity renames),
     // but HA automations send entity_ids. This mapping bridges the two.
@@ -62,7 +66,7 @@ export async function POST(request: NextRequest) {
     const loadTrayRegistry = async () => {
       if (!trayRegistry) {
         try {
-          const haClient = await HomeAssistantClient.fromConnection();
+          const haClient = await getHaClient();
           if (haClient) {
             trayRegistry = await haClient.getTrayEntityRegistry();
           }
@@ -130,9 +134,9 @@ export async function POST(request: NextRequest) {
       // Classify the reported tray state (issue #65) — see classifyTrayState.
       const trayState = classifyTrayState(name);
 
-      if (trayState === 'transient') {
-        // "?" is a spool the printer has not identified, which can last (see classifyTrayState).
-        const reason = name === '?' ? 'unidentified_spool' : 'transient_state';
+      if (trayState === 'transient' || trayState === 'unidentified') {
+        // An unidentified spool ("?") can stay that way (see classifyTrayState).
+        const reason = trayState === 'unidentified' ? 'unidentified_spool' : 'transient_state';
         await createActivityLog({
           type: 'tray_change_ignored',
           message: reason === 'unidentified_spool'
@@ -173,7 +177,7 @@ export async function POST(request: NextRequest) {
         // time we process this event, so we can detect and ignore it. Fail safe:
         // if HA can't confirm the tray is truly empty, preserve the assignment.
         try {
-          const haClient = await HomeAssistantClient.fromConnection();
+          const haClient = await getHaClient();
           if (haClient) {
             const live = await haClient.getState(tray_entity_id);
             const liveName = (live?.attributes?.name ?? '').toString();
@@ -262,9 +266,10 @@ export async function POST(request: NextRequest) {
       if (isValidTrayUuid(tray_uuid) && await traySupportsSerial(tray_entity_id)) {
         // Don't trust a serial on a slot that says it is empty, or one that has
         // already changed back (phantom report, see isPhantomSerialReport).
+        // Fails open: without Home Assistant the serial is matched as before.
         let live: { attributes?: Record<string, unknown> } | null = null;
         try {
-          const haClient = await HomeAssistantClient.fromConnection();
+          const haClient = await getHaClient();
           live = haClient ? await haClient.getState(tray_entity_id) : null;
         } catch (err) {
           console.warn('Could not re-query live HA state before serial match:', err);

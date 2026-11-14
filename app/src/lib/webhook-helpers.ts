@@ -2,6 +2,7 @@
  * Pure helpers for the HA webhook. Kept dependency-free (no DB / no network) so
  * the deduction- and assignment-critical logic can be unit-tested in isolation.
  */
+import { normalizeTag } from '@/lib/api/spoolman';
 
 /** Returns true if tray_uuid is a real spool identifier (not empty, unknown, or all zeros). */
 export function isValidTrayUuid(tray_uuid: string | undefined | null): boolean {
@@ -46,22 +47,24 @@ export function filamentWeight(lengthCm: number, filament?: { density?: number; 
  * Classify a printer-reported tray `name` into how the webhook should treat it
  * (issue #65). This is the single guard that decides whether a spool assignment
  * may be cleared:
- *  - 'transient': HA doesn't know yet (unavailable/unknown) or sent no name, or
- *    the tray holds a spool the printer has not identified. ha-bambulab names
- *    that "?": a spool is loaded but no material is set, for a moment while the
- *    AMS reads a new spool's tag, or for as long as a spool without one is not
- *    set up on the printer. There is no serial to match either way.
- *    NEVER clear an assignment on this.
+ *  - 'transient': HA doesn't know yet (unavailable/unknown) or sent no name.
+ *    NEVER clear an assignment on this — it's a reconnect/resync glitch.
+ *  - 'unidentified': the tray holds a spool the printer has not identified.
+ *    ha-bambulab names that "?": a spool is loaded but no material is set, for
+ *    a moment while the AMS reads a new spool's tag, or for as long as a spool
+ *    without one is not set up on the printer. There is no serial to match
+ *    either way, so it is left alone like a transient state.
  *  - 'empty': a real empty-slot signal — literal "Empty" (ha-bambulab) or a blank
  *    name (ha_creality_ws). The webhook still re-queries live HA state before
  *    actually unassigning.
  *  - 'present': filament is loaded.
  */
-export function classifyTrayState(name: string | null | undefined): 'transient' | 'empty' | 'present' {
+export function classifyTrayState(name: string | null | undefined): 'transient' | 'unidentified' | 'empty' | 'present' {
   const nameLower = (name ?? '').toString().toLowerCase();
-  if (name === undefined || name === null || nameLower === 'unavailable' || nameLower === 'unknown' || name === '?') {
+  if (name === undefined || name === null || nameLower === 'unavailable' || nameLower === 'unknown') {
     return 'transient';
   }
+  if (name === '?') return 'unidentified';
   if (nameLower === 'empty' || name === '') {
     return 'empty';
   }
@@ -106,6 +109,7 @@ export function isPhantomSerialReport(
   const attrs = live?.attributes;
   if (!attrs) return false;
   if (attrs.empty === true) return true;
-  const liveUuid = (attrs.tray_uuid ?? '').toString().toUpperCase();
-  return liveUuid !== '' && liveUuid !== (reportedUuid ?? '').toString().toUpperCase();
+  // Compared as findSpoolByTag compares serials.
+  const liveUuid = normalizeTag(String(attrs.tray_uuid ?? ''));
+  return liveUuid !== '' && liveUuid !== normalizeTag(reportedUuid);
 }

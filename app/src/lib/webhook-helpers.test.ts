@@ -9,7 +9,11 @@ describe('classifyTrayState (issue #65 — never clear on transient states)', ()
     expect(classifyTrayState('unknown')).toBe('transient');
     expect(classifyTrayState('Unavailable')).toBe('transient'); // case-insensitive
     expect(classifyTrayState('UNKNOWN')).toBe('transient');
-    expect(classifyTrayState('?')).toBe('transient'); // a spool with no material set: a tag being read, or none
+  });
+
+  it('treats "?" as a spool the printer has not identified, never as empty', () => {
+    // ha-bambulab: a spool with no material set, while its tag is read or for good.
+    expect(classifyTrayState('?')).toBe('unidentified');
   });
 
   it('treats literal Empty and blank name as empty', () => {
@@ -84,8 +88,9 @@ describe('isPhantomSerialReport', () => {
     expect(isPhantomSerialReport(UUID, { attributes: { empty: false, tray_uuid: '0000000000000000' } })).toBe(true);
   });
 
-  it('accepts a serial the slot still reports, ignoring case', () => {
+  it('accepts a serial the slot still reports, compared as serials are matched', () => {
     expect(isPhantomSerialReport(UUID, { attributes: { empty: false, tray_uuid: UUID.toLowerCase() } })).toBe(false);
+    expect(isPhantomSerialReport(` ${UUID} `, { attributes: { empty: false, tray_uuid: JSON.stringify(UUID) } })).toBe(false);
   });
 
   it('fails open without live state', () => {
