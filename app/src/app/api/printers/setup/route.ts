@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { HomeAssistantClient } from '@/lib/api/homeassistant';
 import prisma from '@/lib/db';
 import { refreshUsagePrinters } from '@/lib/usage/tracker';
+import { isPathSegment } from '@/lib/url-safety';
 
 const SUPPORTED_DOMAINS = ['bambu_lab', 'ha_creality_ws'] as const;
 type PrinterDomain = typeof SUPPORTED_DOMAINS[number];
@@ -123,8 +124,8 @@ export async function POST(request: NextRequest) {
       }
 
       case 'continue': {
-        if (!flowId) {
-          return NextResponse.json({ error: 'flowId required' }, { status: 400 });
+        if (!isPathSegment(flowId)) {
+          return NextResponse.json({ error: 'A valid flowId is required' }, { status: 400 });
         }
         const result = await client.continueConfigFlow(flowId, userInput || {});
         // A printer added: track its usage now, not at the next rediscovery.
@@ -133,8 +134,8 @@ export async function POST(request: NextRequest) {
       }
 
       case 'abort': {
-        if (!flowId) {
-          return NextResponse.json({ error: 'flowId required' }, { status: 400 });
+        if (!isPathSegment(flowId)) {
+          return NextResponse.json({ error: 'A valid flowId is required' }, { status: 400 });
         }
         await client.deleteConfigFlow(flowId);
         return NextResponse.json({ success: true });

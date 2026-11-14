@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import { createActivityLog } from '@/lib/activity-log';
 import { reconnectUsageTracker } from '@/lib/usage/tracker';
 import { isNetworkError } from '@/lib/network-error';
+import { trimTrailingSlashes } from '@/lib/url-safety';
 
 /**
  * Get the base URL for redirects from the request.
@@ -56,7 +57,7 @@ export async function GET(request: NextRequest) {
 
     const { state: storedState, haUrl: rawHaUrl, clientId } = JSON.parse(storedData.value);
     // Remove trailing slashes to prevent double-slash URLs
-    const haUrl = rawHaUrl.replace(/\/+$/, '');
+    const haUrl = trimTrailingSlashes(rawHaUrl);
 
     // Verify CSRF token
     if (state !== storedState) {

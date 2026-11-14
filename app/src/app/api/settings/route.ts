@@ -12,6 +12,7 @@ import {
 import { createActivityLog } from '@/lib/activity-log';
 import { reconnectUsageTracker } from '@/lib/usage/tracker';
 import { isWebhookAuthEnabled } from '@/lib/webhook-secret';
+import { parseServiceUrl, trimTrailingSlashes } from '@/lib/url-safety';
 import {
   UNASSIGNED_LOCATION_KEY,
   SPOOLMAN_LOCATION_MAX,
@@ -34,7 +35,7 @@ export async function GET() {
 
       // Auto-configure Spoolman from addon config if not already set in DB
       let activeSpoolmanConnection = spoolmanConnection;
-      const envSpoolmanUrl = process.env.SPOOLMAN_URL?.replace(/\/+$/, '');
+      const envSpoolmanUrl = process.env.SPOOLMAN_URL && trimTrailingSlashes(process.env.SPOOLMAN_URL);
       if (!activeSpoolmanConnection && envSpoolmanUrl) {
         try {
           const spoolmanClient = new SpoolmanClient(envSpoolmanUrl);
@@ -479,7 +480,11 @@ export async function POST(request: NextRequest) {
 
     if (type === 'qr_base_url') {
       // Save QR code base URL override
-      const qrBaseUrl = (url || '').trim().replace(/\/+$/, '');
+      const typed = typeof url === 'string' ? url.trim() : '';
+      const qrBaseUrl = typed && parseServiceUrl(typed);
+      if (typed && !qrBaseUrl) {
+        return NextResponse.json({ error: 'The QR code base URL must start with http:// or https://' }, { status: 400 });
+      }
       if (qrBaseUrl) {
         await prisma.settings.upsert({
           where: { key: 'qr_base_url' },
@@ -493,13 +498,15 @@ export async function POST(request: NextRequest) {
     }
 
     if (type === 'spoolman') {
-      // Validate input before constructing the client (avoid a 500 on bad input)
-      if (!url || typeof url !== 'string' || !url.trim()) {
-        return NextResponse.json({ error: 'A Spoolman URL is required' }, { status: 400 });
+      // Validate input before constructing the client (avoid a 500 on bad
+      // input). Only http(s): the server connects to this address.
+      const spoolmanUrl = parseServiceUrl(url);
+      if (!spoolmanUrl) {
+        return NextResponse.json({ error: 'A Spoolman URL starting with http:// or https:// is required' }, { status: 400 });
       }
 
       // Validate Spoolman connection
-      const client = new SpoolmanClient(url);
+      const client = new SpoolmanClient(spoolmanUrl);
       const isValid = await client.checkConnection();
 
       if (!isValid) {
@@ -520,7 +527,7 @@ export async function POST(request: NextRequest) {
       // Upsert connection
       await prisma.spoolmanConnection.deleteMany();
       await prisma.spoolmanConnection.create({
-        data: { url },
+        data: { url: spoolmanUrl },
       });
 
       // Log activity

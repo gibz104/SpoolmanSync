@@ -10,6 +10,7 @@
 import prisma from '@/lib/db';
 import WebSocket from 'ws';
 import { normalizeCrealityColorHex } from '@/lib/creality';
+import { pathSegment } from '@/lib/url-safety';
 
 export interface HAState {
   entity_id: string;
@@ -701,7 +702,7 @@ export class HomeAssistantClient {
    * Get states for a specific entity
    */
   async getState(entityId: string): Promise<HAState> {
-    return this.fetch(`/states/${entityId}`);
+    return this.fetch(`/states/${pathSegment(entityId, 'entity ID')}`);
   }
 
   /**
@@ -1232,7 +1233,7 @@ export class HomeAssistantClient {
    * Call a webhook
    */
   async callWebhook(webhookId: string, data: Record<string, unknown>): Promise<void> {
-    await fetch(`${this.baseUrl}/api/webhook/${webhookId}`, {
+    await fetch(`${this.baseUrl}/api/webhook/${pathSegment(webhookId, 'webhook ID')}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1245,7 +1246,7 @@ export class HomeAssistantClient {
    * Fire an event
    */
   async fireEvent(eventType: string, eventData: Record<string, unknown>): Promise<void> {
-    await this.fetch(`/events/${eventType}`, {
+    await this.fetch(`/events/${pathSegment(eventType, 'event type')}`, {
       method: 'POST',
       body: JSON.stringify(eventData),
     });
@@ -1259,7 +1260,7 @@ export class HomeAssistantClient {
     service: string,
     serviceData: Record<string, unknown> = {}
   ): Promise<void> {
-    await this.fetch(`/services/${domain}/${service}`, {
+    await this.fetch(`/services/${pathSegment(domain, 'service domain')}/${pathSegment(service, 'service')}`, {
       method: 'POST',
       body: JSON.stringify(serviceData),
     });
@@ -1284,6 +1285,9 @@ export class HomeAssistantClient {
    * Note: HA returns 400 with errors object for validation failures
    */
   async continueConfigFlow(flowId: string, userInput: Record<string, unknown>): Promise<ConfigFlowResult> {
+    // The ID comes from the browser: checked, it cannot point this POST, and
+    // the token sent with it, at any other Home Assistant endpoint.
+    const flow = pathSegment(flowId, 'config flow ID');
     await this.ensureValidToken();
 
     const headers: Record<string, string> = {
@@ -1295,7 +1299,7 @@ export class HomeAssistantClient {
       headers['Authorization'] = `Bearer ${this.accessToken}`;
     }
 
-    const response = await fetch(`${this.baseUrl}/api/config/config_entries/flow/${flowId}`, {
+    const response = await fetch(`${this.baseUrl}/api/config/config_entries/flow/${flow}`, {
       method: 'POST',
       headers,
       body: JSON.stringify(userInput),
@@ -1341,14 +1345,14 @@ export class HomeAssistantClient {
    * Get the current state of a config flow
    */
   async getConfigFlow(flowId: string): Promise<ConfigFlowResult> {
-    return this.fetch(`/config/config_entries/flow/${flowId}`);
+    return this.fetch(`/config/config_entries/flow/${pathSegment(flowId, 'config flow ID')}`);
   }
 
   /**
    * Delete/abort a config flow
    */
   async deleteConfigFlow(flowId: string): Promise<void> {
-    await this.fetch(`/config/config_entries/flow/${flowId}`, {
+    await this.fetch(`/config/config_entries/flow/${pathSegment(flowId, 'config flow ID')}`, {
       method: 'DELETE',
     });
   }
@@ -1367,7 +1371,7 @@ export class HomeAssistantClient {
    * Delete a config entry
    */
   async deleteConfigEntry(entryId: string): Promise<void> {
-    await this.fetch(`/config/config_entries/entry/${entryId}`, {
+    await this.fetch(`/config/config_entries/entry/${pathSegment(entryId, 'config entry ID')}`, {
       method: 'DELETE',
     });
   }

@@ -2,6 +2,7 @@
  * Spoolman API client
  */
 import { normalizeTagUid } from '@/lib/scan-codes';
+import { pathSegment, positiveId } from '@/lib/url-safety';
 
 export interface Vendor {
   id: number;
@@ -319,7 +320,7 @@ export class SpoolmanClient {
    * Get a spool by ID
    */
   async getSpool(id: number): Promise<Spool> {
-    return this.fetch(`/spool/${id}`);
+    return this.fetch(`/spool/${positiveId(id, 'spool ID')}`);
   }
 
   /**
@@ -354,7 +355,7 @@ export class SpoolmanClient {
    * Update a spool (generic PATCH)
    */
   async updateSpool(id: number, data: Record<string, unknown>): Promise<Spool> {
-    return this.fetch(`/spool/${id}`, {
+    return this.fetch(`/spool/${positiveId(id, 'spool ID')}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
     });
@@ -403,7 +404,7 @@ export class SpoolmanClient {
     }
 
     // Assign the new spool
-    return this.fetch(`/spool/${spoolId}`, {
+    return this.fetch(`/spool/${positiveId(spoolId, 'spool ID')}`, {
       method: 'PATCH',
       body: JSON.stringify(body),
     });
@@ -464,7 +465,7 @@ export class SpoolmanClient {
     }
 
     // Send the updated extra object with empty active_tray
-    return this.fetch<Spool>(`/spool/${spoolId}`, {
+    return this.fetch<Spool>(`/spool/${positiveId(spoolId, 'spool ID')}`, {
       method: 'PATCH',
       body: JSON.stringify(body),
     });
@@ -493,7 +494,7 @@ export class SpoolmanClient {
     // Store the spool serial number
     newExtra['tag'] = JSON.stringify(trayUuid);
 
-    return this.fetch<Spool>(`/spool/${spoolId}`, {
+    return this.fetch<Spool>(`/spool/${positiveId(spoolId, 'spool ID')}`, {
       method: 'PATCH',
       body: JSON.stringify({
         extra: await this.sanitizeExtra(newExtra),
@@ -578,7 +579,7 @@ export class SpoolmanClient {
   async linkTagUid(spoolId: number, uid: string, { move = true } = {}): Promise<{ movedFrom: number | null }> {
     const target = normalizeTagUid(uid);
     if (!target) throw new Error(`"${uid}" is not a tag UID`);
-    const link = () => this.request(`/spool/${spoolId}/tag`, { method: 'POST', body: JSON.stringify({ uid: target }) });
+    const link = () => this.request(`/spool/${positiveId(spoolId, 'spool ID')}/tag`, { method: 'POST', body: JSON.stringify({ uid: target }) });
     let movedFrom: number | null = null;
     let response = await link();
     if (response.status === 409) {
@@ -596,7 +597,7 @@ export class SpoolmanClient {
 
   /** Unlink a tag from a spool in Spoolman (0.27+). */
   async unlinkTagUid(spoolId: number, uid: string): Promise<void> {
-    const response = await this.request(`/spool/${spoolId}/tag/${normalizeTagUid(uid)}`, { method: 'DELETE' });
+    const response = await this.request(`/spool/${positiveId(spoolId, 'spool ID')}/tag/${normalizeTagUid(uid)}`, { method: 'DELETE' });
     if (!response.ok) throw await apiError(response);
   }
 
@@ -614,7 +615,7 @@ export class SpoolmanClient {
    * Update spool weight (use filament). A negative weight gives filament back.
    */
   async useWeight(spoolId: number, weight: number): Promise<Spool> {
-    return this.fetch(`/spool/${spoolId}/use`, {
+    return this.fetch(`/spool/${positiveId(spoolId, 'spool ID')}/use`, {
       method: 'PUT',
       body: JSON.stringify({ use_weight: weight }),
     });
@@ -645,7 +646,7 @@ export class SpoolmanClient {
    * Create or update an extra field for spools
    */
   async createSpoolExtraField(key: string, name: string, fieldType: string = 'text'): Promise<ExtraField[]> {
-    return this.fetch(`/field/spool/${key}`, {
+    return this.fetch(`/field/spool/${pathSegment(key, 'extra field key')}`, {
       method: 'POST',
       body: JSON.stringify({
         name,

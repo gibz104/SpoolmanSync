@@ -14,6 +14,7 @@
  * diff carries `lc` when the state value moved, otherwise `lu`.
  */
 import WebSocket from 'ws';
+import { trimTrailingSlashes } from '@/lib/url-safety';
 
 export interface EntityState {
   state: string;
@@ -186,7 +187,7 @@ export class EntitySubscription {
 
     let socket: WebSocket;
     try {
-      socket = new WebSocket(`${target.url.replace(/^http/, 'ws').replace(/\/+$/, '')}/api/websocket`, { handshakeTimeout: 15_000 });
+      socket = new WebSocket(`${trimTrailingSlashes(target.url.replace(/^http/, 'ws'))}/api/websocket`, { handshakeTimeout: 15_000 });
     } catch (err) {
       return this.reconnect(`bad Home Assistant address: ${err instanceof Error ? err.message : String(err)}`);
     }

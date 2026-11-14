@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
 import { isNetworkError, isTimeoutError } from '@/lib/network-error';
+import { parseServiceUrl } from '@/lib/url-safety';
 
 /**
  * Get the base URL for OAuth callbacks from the request.
@@ -34,14 +35,13 @@ function getBaseUrl(request: NextRequest): string {
  * GET /api/auth/ha?ha_url=http://homeassistant:8123
  */
 export async function GET(request: NextRequest) {
-  let haUrl = request.nextUrl.searchParams.get('ha_url');
+  // Trailing slashes removed, to prevent double-slash URLs. Only http(s): the
+  // server fetches this address below.
+  const haUrl = parseServiceUrl(request.nextUrl.searchParams.get('ha_url'));
 
   if (!haUrl) {
-    return NextResponse.json({ error: 'ha_url is required' }, { status: 400 });
+    return NextResponse.json({ error: 'A Home Assistant URL starting with http:// or https:// is required' }, { status: 400 });
   }
-
-  // Remove trailing slashes to prevent double-slash URLs
-  haUrl = haUrl.replace(/\/+$/, '');
 
   // Pre-flight: confirm OUR SERVER can reach HA before sending the user
   // through the login flow. The browser reaching HA proves nothing about the
@@ -67,7 +67,7 @@ export async function GET(request: NextRequest) {
     await fetch(`${haUrl}/api/`, { redirect: 'manual', signal: AbortSignal.timeout(12000) });
   } catch (err) {
     if (isNetworkError(err) && !isTimeoutError(err)) {
-      console.error(`[OAuth] Pre-flight to ${haUrl} failed (network):`, err);
+      console.error('[OAuth] Pre-flight to %s failed (network):', haUrl, err);
       return NextResponse.json({
         error: `SpoolmanSync's server cannot reach Home Assistant at ${haUrl}. ` +
           'Your browser reaching it is not enough — the SpoolmanSync server itself needs network access to this address. ' +
@@ -75,7 +75,7 @@ export async function GET(request: NextRequest) {
       }, { status: 400 });
     }
     // Timeout, TLS, or anything else: log and continue with the normal flow.
-    console.warn(`[OAuth] Pre-flight to ${haUrl} inconclusive, continuing:`, err);
+    console.warn('[OAuth] Pre-flight to %s inconclusive, continuing:', haUrl, err);
   }
 
   // Generate a random state for CSRF protection
