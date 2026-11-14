@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo, type ReactNode } from 'react';
+import { useState, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { SpoolFilterBar } from '@/components/dashboard/spool-filter-bar';
@@ -30,7 +30,8 @@ import { SpoolColorSwatch } from '@/components/spool-color-swatch';
 import type { Spool } from '@/lib/api/spoolman';
 import { buildSpoolSearchValue, parseExtraValue } from '@/lib/api/spoolman';
 import { buildExternalUrl } from '@/lib/ingress-path';
-import { currentNfcBlocker, isSecureUrl, type NfcBlocker } from '@/lib/web-nfc';
+import { isSecureUrl, type NfcBlocker } from '@/lib/web-nfc';
+import { useNfcBlocker } from '@/lib/use-nfc-blocker';
 import { copyText } from '@/lib/clipboard';
 
 type SortBy = 'id' | 'name' | 'material' | 'vendor';
@@ -49,47 +50,6 @@ interface FilterField {
 }
 
 type WriteStatus = 'idle' | 'writing' | 'success' | 'error';
-
-// Extend Window interface for Web NFC API
-declare global {
-  interface Window {
-    NDEFReader?: new () => NDEFReader;
-  }
-
-  interface NDEFReader {
-    write(message: NDEFMessageInit): Promise<void>;
-    scan(): Promise<void>;
-    onreading: ((event: NDEFReadingEvent) => void) | null;
-    onreadingerror: ((event: Event) => void) | null;
-  }
-
-  interface NDEFMessageInit {
-    records: NDEFRecordInit[];
-  }
-
-  interface NDEFRecordInit {
-    recordType: string;
-    data?: string | BufferSource;
-    mediaType?: string;
-    id?: string;
-    encoding?: string;
-    lang?: string;
-  }
-
-  interface NDEFReadingEvent extends Event {
-    message: NDEFMessage;
-    serialNumber: string;
-  }
-
-  interface NDEFMessage {
-    records: NDEFRecord[];
-  }
-
-  interface NDEFRecord {
-    recordType: string;
-    data: DataView;
-  }
-}
 
 function sortSpools(spools: Spool[], sortBy: SortBy): Spool[] {
   return [...spools].sort((a, b) => {
@@ -192,14 +152,15 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
   const [enabledFields, setEnabledFields] = useState<FilterField[]>([]);
   const [sortBy, setSortBy] = useState<SortBy>('id');
   // undefined while checking; null when this page can write tags.
-  const [blocker, setBlocker] = useState<NfcBlocker | null | undefined>(undefined);
+  const blocker = useNfcBlocker();
   const [writeStatus, setWriteStatus] = useState<WriteStatus>('idle');
   const [errorMessage, setErrorMessage] = useState<string>('');
-
-  // Check for NFC support on mount
+  const [linkNote, setLinkNote] = useState('');
+  // The spool selected now, so a link answer for an earlier one is not shown against it.
+  const selectedId = useRef<number | null>(null);
   useEffect(() => {
-    setBlocker(currentNfcBlocker());
-  }, []);
+    selectedId.current = selectedSpool?.id ?? null;
+  }, [selectedSpool]);
 
   // Fetch filter fields on mount
   useEffect(() => {
@@ -239,6 +200,7 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
     setSearchValue('');
     setWriteStatus('idle');
     setErrorMessage('');
+    setLinkNote('');
   };
 
   const handleFilterChange = (key: string, value: string | null) => {
@@ -255,11 +217,36 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
     else toast.error('Could not copy the link; select it and copy it instead');
   };
 
+  // So the tag identifies the spool in Spoolman too (0.27+, #89). Best effort:
+  // the tag is written either way.
+  const linkWrittenTag = async (spoolId: number, uid: string) => {
+    try {
+      const res = await fetch('/api/spools/tag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spoolId, uid }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (selectedId.current !== spoolId) return;
+      if (res.ok && data.linked) {
+        setLinkNote(data.movedFrom !== null && data.movedFrom !== undefined
+          ? `Spoolman now knows this tag as spool #${spoolId} (it was linked to spool #${data.movedFrom}).`
+          : `Spoolman now knows this tag as spool #${spoolId}.`);
+      } else if (!res.ok) {
+        setLinkNote(`The tag works, but Spoolman could not link it to the spool: ${data.error || 'unknown error'}.`);
+      }
+    } catch {
+      if (selectedId.current === spoolId) setLinkNote('The tag works, but Spoolman could not be reached to link it to the spool.');
+    }
+  };
+
   const handleWriteNFC = async () => {
-    if (!nfcUrl || blocker || !window.NDEFReader) return;
+    const spoolId = selectedSpool?.id;
+    if (!nfcUrl || spoolId === undefined || blocker || !window.NDEFReader) return;
 
     setWriteStatus('writing');
     setErrorMessage('');
+    setLinkNote('');
 
     try {
       // Check NFC permission status first
@@ -277,16 +264,29 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
       }
 
       const ndef = new window.NDEFReader();
+      const scan = new AbortController();
+      // The scan also reports the tapped tag's UID, for linking it in Spoolman.
+      let tagUid = '';
+      ndef.onreading = (event) => { tagUid = event.serialNumber ?? ''; };
 
-      // Request permission by initiating a scan first
-      // This triggers the browser's NFC permission prompt if not yet granted
-      await ndef.scan();
+      try {
+        // Request permission by initiating a scan first
+        // This triggers the browser's NFC permission prompt if not yet granted
+        await ndef.scan({ signal: scan.signal });
 
-      // Now write to the tag
-      await ndef.write({
-        records: [{ recordType: 'url', data: nfcUrl }],
-      });
-      setWriteStatus('success');
+        // Now write to the tag
+        await ndef.write({
+          records: [{ recordType: 'url', data: nfcUrl }],
+        });
+        setWriteStatus('success');
+        // The reading event can trail the write by a moment.
+        for (let waited = 0; !tagUid && waited < 1000; waited += 100) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      } finally {
+        scan.abort();
+      }
+      if (tagUid) void linkWrittenTag(spoolId, tagUid);
     } catch (err) {
       setWriteStatus('error');
       if (err instanceof Error) {
@@ -425,6 +425,7 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
               <AlertTitle className="text-green-500">Success!</AlertTitle>
               <AlertDescription>
                 NFC tag written successfully. You can now stick it on your spool.
+                {linkNote && <span className="block mt-1 text-xs text-muted-foreground">{linkNote}</span>}
               </AlertDescription>
             </Alert>
           )}

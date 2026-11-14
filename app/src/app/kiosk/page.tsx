@@ -7,33 +7,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Nfc, MonitorSmartphone } from 'lucide-react';
 import { isKioskMode, enableKioskMode, disableKioskMode } from '@/lib/kiosk';
-
-function extractSpoolId(input: string): string | null {
-  const trimmed = input.trim();
-
-  // SpoolmanSync URL: /scan/spool/ID
-  const syncMatch = trimmed.match(/\/scan\/spool\/(\d+)/i);
-  if (syncMatch) return syncMatch[1];
-
-  // Spoolman QR: web+spoolman:s-ID
-  const spoolmanMatch = trimmed.match(/web\+spoolman:s-(\d+)/i);
-  if (spoolmanMatch) return spoolmanMatch[1];
-
-  // Spoolman URL: /spool/show/ID
-  const urlMatch = trimmed.match(/\/spool\/show\/(\d+)/i);
-  if (urlMatch) return urlMatch[1];
-
-  // Plain number
-  if (/^\d+$/.test(trimmed)) return trimmed;
-
-  return null;
-}
+import { parseScanLink, slotPath, type ScanTarget } from '@/lib/scan-codes';
 
 export default function KioskPage() {
   const router = useRouter();
   const [enabled, setEnabled] = useState(false);
   const [checking, setChecking] = useState(true);
   const [scanInput, setScanInput] = useState('');
+  const [notFound, setNotFound] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -69,15 +50,30 @@ export default function KioskPage() {
     router.push('/');
   };
 
+  // A reader types what the tag holds: a spool or slot link, a spool id, or
+  // the tag's UID, which Spoolman may have linked to a spool.
   const handleScanSubmit = useCallback(
-    (e: React.FormEvent) => {
+    async (e: React.FormEvent) => {
       e.preventDefault();
-      const spoolId = extractSpoolId(scanInput);
-      if (spoolId) {
-        setScanInput('');
-        router.push(`/scan/spool/${spoolId}`);
-      } else {
-        setScanInput('');
+      const code = scanInput.trim();
+      setScanInput('');
+      if (!code) return;
+      const open = (target: ScanTarget) =>
+        router.push(target.kind === 'spool' ? `/scan/spool/${target.id}` : slotPath(target.key));
+      const link = parseScanLink(code);
+      if (link) {
+        open(link);
+        return;
+      }
+      try {
+        const res = await fetch(`/api/spools/resolve?code=${encodeURIComponent(code)}`);
+        if (res.ok) {
+          open((await res.json()).target);
+          return;
+        }
+        setNotFound(res.status === 404 ? `No spool found for ${code}` : 'Could not look that up');
+      } catch {
+        setNotFound('Could not look that up');
       }
     },
     [scanInput, router]
@@ -142,12 +138,20 @@ export default function KioskPage() {
           <Input
             ref={inputRef}
             value={scanInput}
-            onChange={(e) => setScanInput(e.target.value)}
+            onChange={(e) => {
+              setScanInput(e.target.value);
+              setNotFound(null);
+            }}
             placeholder="Waiting for scan..."
             className="text-center text-[clamp(0.875rem,3.5vw,1.125rem)] h-[clamp(2.5rem,8vw,3rem)]"
             autoFocus
           />
         </form>
+        {notFound && (
+          <p className="text-[clamp(0.75rem,3vw,1rem)] text-destructive mt-[clamp(0.5rem,2vw,1rem)] text-center">
+            {notFound}
+          </p>
+        )}
         <p className="text-[clamp(0.625rem,2vw,0.75rem)] text-muted-foreground/50 mt-[clamp(0.5rem,2vw,1rem)] text-center">
           Or type a spool ID and press Enter
         </p>

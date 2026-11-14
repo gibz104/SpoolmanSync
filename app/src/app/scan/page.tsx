@@ -11,6 +11,9 @@ import { toast } from 'sonner';
 import type { Spool } from '@/lib/api/spoolman';
 import { QRCodeGenerator } from '@/components/qr-code-generator';
 import { NFCWriter } from '@/components/nfc-writer';
+import { NFCReader } from '@/components/nfc-reader';
+import { parseScanLink, slotPath, type ScanTarget } from '@/lib/scan-codes';
+import { useNfcBlocker } from '@/lib/use-nfc-blocker';
 
 function ScanPageContent() {
   const searchParams = useSearchParams();
@@ -22,70 +25,32 @@ function ScanPageContent() {
   const [spoolsLoading, setSpoolsLoading] = useState(true);
   const [directAccessPort, setDirectAccessPort] = useState<number | undefined>(undefined);
   const [qrBaseUrl, setQrBaseUrl] = useState<string | undefined>(undefined);
+  const canReadNfc = useNfcBlocker() === null;
 
   const handleScan = useCallback(async (scannedData: string) => {
     setLoading(true);
     setError(null);
 
+    const open = (target: ScanTarget) =>
+      router.push(target.kind === 'spool' ? `/scan/spool/${target.id}` : slotPath(target.key));
+
     try {
-      // Try to extract spool ID from various formats
-      let spoolId: string | null = null;
-      const trimmedData = scannedData.trim();
-
-      // 1. Spoolman QR code format: web+spoolman:s-ID
-      const spoolmanMatch = trimmedData.match(/web\+spoolman:s-(\d+)/i);
-      if (spoolmanMatch) {
-        spoolId = spoolmanMatch[1];
-      }
-
-      // 2. URL format: http(s)://hostname/spool/show/ID
-      if (!spoolId) {
-        const urlMatch = trimmedData.match(/\/spool\/show\/(\d+)/i);
-        if (urlMatch) {
-          spoolId = urlMatch[1];
-        }
-      }
-
-      // 3. SpoolmanSync URL format: /scan/spool/ID
-      if (!spoolId) {
-        const syncMatch = trimmedData.match(/\/scan\/spool\/(\d+)/i);
-        if (syncMatch) {
-          spoolId = syncMatch[1];
-        }
-      }
-
-      // 4. Plain number (assume it's a spool ID)
-      if (!spoolId && /^\d+$/.test(trimmedData)) {
-        spoolId = trimmedData;
-      }
-
-      // If we got a direct spool ID, redirect immediately
-      if (spoolId) {
-        router.push(`/scan/spool/${spoolId}`);
+      // A spool or slot link opens straight away; anything else (a spool id,
+      // a barcode, a tag's UID) is looked up.
+      const link = parseScanLink(scannedData);
+      if (link) {
+        open(link);
         return;
       }
 
-      // 5. If no ID extracted, try matching by barcode in extra field
-      const res = await fetch('/api/spools');
-      if (!res.ok) throw new Error('Failed to fetch spools');
-
-      const data = await res.json();
-      const spools: Spool[] = data.spools || [];
-
-      const matchedSpool = spools.find((s) => {
-        if (!s.extra?.['barcode']) return false;
-        const storedBarcode = s.extra['barcode'];
-        // Compare with raw value and JSON-encoded value
-        return storedBarcode === trimmedData ||
-               storedBarcode === JSON.stringify(trimmedData) ||
-               storedBarcode === `"${trimmedData}"`;
-      });
-
-      if (matchedSpool) {
-        router.push(`/scan/spool/${matchedSpool.id}`);
-      } else {
+      const res = await fetch(`/api/spools/resolve?code=${encodeURIComponent(scannedData.trim())}`);
+      if (res.ok) {
+        open((await res.json()).target);
+      } else if (res.status === 404) {
         setError(`No spool found for: ${scannedData}`);
         toast.error('No matching spool found');
+      } else {
+        throw new Error('Failed to look up spool');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to look up spool');
@@ -161,6 +126,21 @@ function ScanPageContent() {
         </CardContent>
       </Card>
 
+      {/* NFC Tag Reader: only where this page can use Web NFC */}
+      {canReadNfc && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Read NFC Tag</CardTitle>
+            <CardDescription>
+              Tap a spool&apos;s or slot&apos;s tag: one SpoolmanSync wrote, or one linked to a spool in Spoolman
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <NFCReader spools={allSpools} />
+          </CardContent>
+        </Card>
+      )}
+
       {/* Manual Entry */}
       <Card>
         <CardHeader>
@@ -172,7 +152,7 @@ function ScanPageContent() {
         <CardContent>
           <form onSubmit={handleManualSubmit} className="flex gap-2">
             <Input
-              placeholder="Enter spool ID, Spoolman barcode, or web+spoolman:s-123"
+              placeholder="Enter spool ID, Spoolman barcode, tag UID, or web+spoolman:s-123"
               value={manualBarcode}
               onChange={(e) => setManualBarcode(e.target.value)}
             />

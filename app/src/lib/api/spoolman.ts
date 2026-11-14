@@ -1,6 +1,7 @@
 /**
  * Spoolman API client
  */
+import { normalizeTagUid } from '@/lib/scan-codes';
 
 export interface Vendor {
   id: number;
@@ -36,6 +37,22 @@ export interface Spool {
   archived: boolean;
   location?: string;
   lot_nr?: string;
+  /** Spoolman 0.27+: the NFC/RFID tags that identify this spool, by hardware UID. */
+  tags?: SpoolTag[];
+}
+
+export interface SpoolTag {
+  /** Upper-case hex, no separators. */
+  uid: string;
+  format?: string | null;
+}
+
+/** A tag Spoolman has linked to something this cannot move it from: a filament, say. */
+export class TagHeldError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TagHeldError';
+  }
 }
 
 export interface UpdateTrayPayload {
@@ -523,6 +540,71 @@ export class SpoolmanClient {
     if (!target) return null;
 
     return spools.find(s => normalizeTag(s.extra?.['tag']) === target) ?? null;
+  }
+
+  /**
+   * Whether Spoolman links NFC/RFID tags to spools by their hardware UID,
+   * which it does from 0.27 (#89).
+   */
+  async supportsTagUids(): Promise<boolean> {
+    const { version } = await this.fetch<{ version?: string }>('/info');
+    const [major, minor] = (version ?? '').split('.').map(Number);
+    return major > 0 || (major === 0 && minor >= 27);
+  }
+
+  /**
+   * The spool a tag (by its hardware UID) is linked to in Spoolman, unless it
+   * is archived. Spoolman before 0.27 ignores the `tag` filter and lists every
+   * spool, so only a spool that carries the tag counts.
+   */
+  async findSpoolByTagUid(uid: string): Promise<Spool | null> {
+    const target = normalizeTagUid(uid);
+    if (!target) return null;
+    const spools: Spool[] = await this.fetch(`/spool?tag=${target}`);
+    return spools.find(s => s.tags?.some(t => normalizeTagUid(t.uid) === target)) ?? null;
+  }
+
+  /**
+   * Link a tag to a spool in Spoolman (0.27+), so its UID identifies the
+   * spool there too. A tag another spool holds is moved: it now carries this
+   * spool's link, or the user picked this spool for it. Throws TagHeldError
+   * for a tag that identifies something else, such as a filament.
+   */
+  async linkTagUid(spoolId: number, uid: string): Promise<{ movedFrom: number | null }> {
+    const target = normalizeTagUid(uid);
+    if (!target) throw new Error(`"${uid}" is not a tag UID`);
+    const link = () => fetch(`${this.baseUrl}/api/v1/spool/${spoolId}/tag`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(30_000),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uid: target }),
+    });
+    let movedFrom: number | null = null;
+    let response = await link();
+    if (response.status === 409) {
+      const holder = await response.json().catch(() => ({})) as { message?: string; spool_id?: number | null };
+      if (typeof holder.spool_id !== 'number' || holder.spool_id === spoolId) {
+        throw new TagHeldError(holder.message || 'Spoolman has this tag linked to something else.');
+      }
+      await this.unlinkTagUid(holder.spool_id, target);
+      movedFrom = holder.spool_id;
+      response = await link();
+    }
+    if (!response.ok) {
+      throw Object.assign(new Error(`Spoolman API error: ${response.status} - ${await response.text()}`), { status: response.status });
+    }
+    return { movedFrom };
+  }
+
+  /** Unlink a tag from a spool in Spoolman (0.27+). */
+  async unlinkTagUid(spoolId: number, uid: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/api/v1/spool/${spoolId}/tag/${normalizeTagUid(uid)}`, {
+      method: 'DELETE',
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) {
+      throw Object.assign(new Error(`Spoolman API error: ${response.status} - ${await response.text()}`), { status: response.status });
+    }
   }
 
   /**

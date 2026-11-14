@@ -7,6 +7,49 @@
  * blocked, so in both the write used to fail only after a spool was picked,
  * with a message about browser permissions that no setting could fix.
  */
+// Web NFC (Chrome on Android), which TypeScript's DOM types leave out.
+declare global {
+  interface Window {
+    NDEFReader?: new () => NDEFReader;
+  }
+
+  interface NDEFReader {
+    write(message: NDEFMessageInit): Promise<void>;
+    scan(options?: { signal?: AbortSignal }): Promise<void>;
+    onreading: ((event: NDEFReadingEvent) => void) | null;
+    onreadingerror: ((event: Event) => void) | null;
+  }
+
+  interface NDEFMessageInit {
+    records: NDEFRecordInit[];
+  }
+
+  interface NDEFRecordInit {
+    recordType: string;
+    data?: string | BufferSource;
+    mediaType?: string;
+    id?: string;
+    encoding?: string;
+    lang?: string;
+  }
+
+  interface NDEFReadingEvent extends Event {
+    message: NDEFMessage;
+    /** The tag's hardware UID, colon-separated lower-case hex. */
+    serialNumber: string;
+  }
+
+  interface NDEFMessage {
+    records: NDEFRecord[];
+  }
+
+  interface NDEFRecord {
+    recordType: string;
+    data?: DataView;
+    encoding?: string;
+  }
+}
+
 export type NfcBlocker = 'companion-app' | 'insecure' | 'unsupported' | 'embedded';
 
 export interface NfcEnvironment {
@@ -52,5 +95,32 @@ export function isSecureUrl(url: string): boolean {
     return protocol === 'https:' || hostname === 'localhost' || hostname === '127.0.0.1';
   } catch {
     return false;
+  }
+}
+
+/** Write a link to the next tag held to the phone. Needs a page with no blocker. */
+export async function writeNfcLink(url: string): Promise<void> {
+  if (!window.NDEFReader) throw Object.assign(new Error('Web NFC is not available'), { name: 'NotSupportedError' });
+  const reader = new window.NDEFReader();
+  const scan = new AbortController();
+  try {
+    // Scanning first is what asks for NFC permission.
+    await reader.scan({ signal: scan.signal });
+    await reader.write({ records: [{ recordType: 'url', data: url }] });
+  } finally {
+    scan.abort();
+  }
+}
+
+/** A sentence for a failed Web NFC call. */
+export function nfcErrorMessage(err: unknown): string {
+  switch (err instanceof Error ? err.name : '') {
+    case 'NotAllowedError': return 'NFC permission is blocked. Allow NFC for this site in Chrome\'s site settings.';
+    case 'NotSupportedError': return 'NFC is not supported on this device.';
+    case 'NotReadableError': return 'Could not read the NFC tag. Make sure it\'s positioned correctly.';
+    case 'NetworkError': return 'NFC transfer failed. Please try again.';
+    case 'AbortError': return 'NFC operation was cancelled.';
+    case 'SecurityError': return 'This page is not allowed to use NFC. Open SpoolmanSync on its own page in Chrome.';
+    default: return 'Failed to write to the NFC tag.';
   }
 }
