@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, type ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { SpoolFilterBar } from '@/components/dashboard/spool-filter-bar';
@@ -106,45 +106,39 @@ function sortSpools(spools: Spool[], sortBy: SortBy): Spool[] {
   });
 }
 
-/** Why Web NFC cannot write tags on this page, and what to do instead. */
-function NfcBlockedNotice({ blocker, directUrl, linkTemplate }: { blocker: NfcBlocker; directUrl: string; linkTemplate: string }) {
-  const title = {
-    'companion-app': 'Open SpoolmanSync in a browser to write NFC tags',
-    insecure: 'Writing NFC tags needs an https:// address',
-    unsupported: 'Web NFC Not Available',
-    embedded: 'Open SpoolmanSync directly to write NFC tags',
-  }[blocker];
+/** Why Web NFC cannot write tags on this page, and what to do instead: one entry per NfcBlocker. */
+const BLOCKED_NOTICES: Record<NfcBlocker, { title: string; body: ReactNode; openDirectly: boolean }> = {
+  'companion-app': {
+    title: 'Open SpoolmanSync in a browser to write NFC tags',
+    body: <>The Home Assistant app can&apos;t write NFC tags for a web page. Open SpoolmanSync in Chrome on Android instead.</>,
+    openDirectly: true,
+  },
+  insecure: {
+    title: 'Writing NFC tags needs an https:// address',
+    body: <>Browsers only allow Web NFC on https:// pages, and only Chrome, Edge, Opera and Samsung Internet on Android support it. Open SpoolmanSync through an https:// address, such as a reverse proxy.</>,
+    openDirectly: false,
+  },
+  unsupported: {
+    title: 'Web NFC Not Available',
+    body: <>Web NFC is only supported on <strong>Android</strong> with certain browsers (Chrome, Edge, Opera, Samsung Internet). iOS, Firefox, and Brave do not support it.</>,
+    openDirectly: false,
+  },
+  embedded: {
+    title: 'Open SpoolmanSync directly to write NFC tags',
+    body: <>Chrome doesn&apos;t allow Web NFC inside the Home Assistant sidebar. Open SpoolmanSync on its own page in Chrome on Android to write tags.</>,
+    openDirectly: true,
+  },
+};
 
+function NfcBlockedNotice({ blocker, directUrl, linkTemplate }: { blocker: NfcBlocker; directUrl: string; linkTemplate: string }) {
+  const notice = BLOCKED_NOTICES[blocker];
   return (
     <Alert>
       <Smartphone className="h-4 w-4" />
-      <AlertTitle>{title}</AlertTitle>
+      <AlertTitle>{notice.title}</AlertTitle>
       <AlertDescription className="space-y-2">
-        {blocker === 'companion-app' && (
-          <p>
-            The Home Assistant app can&apos;t write NFC tags for a web page. Open SpoolmanSync in Chrome on
-            Android instead.
-          </p>
-        )}
-        {blocker === 'insecure' && (
-          <p>
-            Browsers only allow Web NFC on https:// pages, and only Chrome, Edge, Opera and Samsung Internet
-            on Android support it. Open SpoolmanSync through an https:// address, such as a reverse proxy.
-          </p>
-        )}
-        {blocker === 'unsupported' && (
-          <p>
-            Web NFC is only supported on <strong>Android</strong> with certain browsers
-            (Chrome, Edge, Opera, Samsung Internet). iOS, Firefox, and Brave do not support it.
-          </p>
-        )}
-        {blocker === 'embedded' && (
-          <p>
-            Chrome doesn&apos;t allow Web NFC inside the Home Assistant sidebar. Open SpoolmanSync on its own
-            page in Chrome on Android to write tags.
-          </p>
-        )}
-        {(blocker === 'embedded' || blocker === 'companion-app') && (
+        <p>{notice.body}</p>
+        {notice.openDirectly && (
           <>
             <Button asChild variant="outline" size="sm">
               <a href={directUrl} target="_blank" rel="noopener noreferrer">
