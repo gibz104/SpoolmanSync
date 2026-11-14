@@ -1,9 +1,9 @@
 # SpoolmanSync Home Assistant Add-on
 # Builds the Next.js app with nginx for HA ingress proxy
 
-# Accept BUILD_FROM for Supervisor compatibility but use node:20-alpine
+# Accept BUILD_FROM for Supervisor compatibility but use node:24-alpine
 ARG BUILD_FROM
-FROM node:20-alpine AS base
+FROM node:24-alpine AS base
 
 # Install dependencies only when needed
 FROM base AS deps
@@ -26,7 +26,7 @@ RUN npx prisma generate
 RUN npm run build
 
 # Production image
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production

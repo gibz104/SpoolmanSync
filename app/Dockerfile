@@ -1,7 +1,7 @@
-FROM node:20-alpine AS base
+FROM node:24-alpine AS base
 
-# Update npm — pinned to the latest major that still supports Node 20.
-# `npm@latest` (12.x) now requires Node >=22 and breaks the build on this base.
+# Update npm within major 11. npm 12 blocks dependency install scripts by
+# default, and better-sqlite3 builds its native module in one.
 RUN npm install -g npm@11
 
 # Install dependencies only when needed
