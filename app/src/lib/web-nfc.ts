@@ -7,6 +7,8 @@
  * blocked, so in both the write used to fail only after a spool was picked,
  * with a message about browser permissions that no setting could fix.
  */
+import { normalizeTagUid } from '@/lib/scan-codes';
+
 // Web NFC (Chrome on Android), which TypeScript's DOM types leave out.
 declare global {
   interface Window {
@@ -96,6 +98,67 @@ export function isSecureUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** What a tapped tag holds: its UID ('' if not reported) and its URL and text records' text. */
+export interface TappedTag {
+  uid: string;
+  texts: string[];
+}
+
+/** The text of a tag's URL and text records, where a link would be. */
+function recordTexts(event: NDEFReadingEvent): string[] {
+  const texts: string[] = [];
+  for (const record of event.message?.records ?? []) {
+    if (!record.data || !['url', 'absolute-url', 'text'].includes(record.recordType)) continue;
+    try {
+      texts.push(new TextDecoder(record.encoding || 'utf-8').decode(record.data));
+    } catch {
+      // An encoding the browser can't decode holds no link we know.
+    }
+  }
+  return texts;
+}
+
+/**
+ * Wait for one tag to be tapped, and resolve with what it holds. The scan
+ * stops after that tag; aborting `signal` stops it sooner and rejects with an
+ * AbortError. A tag the phone can't read (moved away too soon, or not NDEF)
+ * calls `onUnreadable` and the scan keeps going, so the next tap retries.
+ * Needs a page with no blocker.
+ */
+export function readNfcTag(signal: AbortSignal, onUnreadable?: () => void): Promise<TappedTag> {
+  return new Promise((resolve, reject) => {
+    if (!window.NDEFReader) {
+      reject(Object.assign(new Error('Web NFC is not available'), { name: 'NotSupportedError' }));
+      return;
+    }
+    const scan = new AbortController();
+    const cancel = () => {
+      scan.abort();
+      reject(Object.assign(new Error('NFC operation was cancelled'), { name: 'AbortError' }));
+    };
+    if (signal.aborted) {
+      cancel();
+      return;
+    }
+    signal.addEventListener('abort', cancel, { once: true });
+    const reader = new window.NDEFReader();
+    reader.onreading = event => {
+      if (scan.signal.aborted) return;
+      signal.removeEventListener('abort', cancel);
+      scan.abort();
+      resolve({ uid: normalizeTagUid(event.serialNumber ?? ''), texts: recordTexts(event) });
+    };
+    reader.onreadingerror = () => {
+      if (!scan.signal.aborted) onUnreadable?.();
+    };
+    reader.scan({ signal: scan.signal }).catch(err => {
+      if (scan.signal.aborted) return;
+      signal.removeEventListener('abort', cancel);
+      reject(err);
+    });
+  });
 }
 
 /**

@@ -19,7 +19,7 @@ Works with filament from any vendor (Polymaker, Sunlu, Elegoo, Hatchbox, eSUN, B
 - QR code scanning (scan Spoolman QR codes or custom barcodes)
 - Generate and print QR code labels for spools (scan with phone to assign)
 - Write spool links to NFC sticker tags (tap with phone to assign, Android only), and link them to the spool in Spoolman 0.27+
-- Read NFC tags linked to spools in Spoolman 0.27+ (native Spoolman tags), from the Scan page or a kiosk's USB reader
+- Read NFC tags linked to spools in Spoolman 0.27+ (native Spoolman tags), from the Scan page, a dashboard tray (to assign the spool there), or a kiosk's USB reader
 - Tags and QR codes for AMS trays and storage slots: scan a spool, then its slot, to assign it
 - Low stock alerts via Home Assistant notifications with configurable thresholds and grouping
 - Kiosk mode for touchscreen spool-scanning stations (e.g., Raspberry Pi)

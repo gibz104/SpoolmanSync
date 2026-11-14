@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { Link2, Loader2, Nfc } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -31,6 +33,9 @@ import { SpoolColorSwatch } from '@/components/spool-color-swatch';
 import type { HATray } from '@/lib/api/homeassistant';
 import type { Spool } from '@/lib/api/spoolman';
 import { buildSpoolSearchValue, parseExtraValue } from '@/lib/api/spoolman';
+import { linkTag } from '@/lib/scan-client';
+import { useNfcBlocker } from '@/lib/use-nfc-blocker';
+import { useTagTap } from '@/lib/use-tag-tap';
 
 type SortBy = 'id' | 'name' | 'material' | 'vendor';
 
@@ -113,11 +118,43 @@ const PLACEHOLDER_SPOOL = {
   },
 } as unknown as Spool;
 
+/** Link a tag Spoolman didn't know to the spool picked for it (#89). */
+async function linkPickedTag(spoolId: number, uid: string) {
+  const result = await linkTag(spoolId, uid);
+  if (result.linked) toast.success(`Tag linked to spool #${spoolId}`);
+  else if (!result.supported) toast.info('The tag was not linked: that needs Spoolman 0.27 or later');
+  else toast.error(`The tag was not linked: ${result.error}`);
+}
+
 export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mismatch, showLocation }: TraySlotProps) {
   const [open, setOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string | null>>({});
   const [enabledFields, setEnabledFields] = useState<FilterField[]>([]);
   const [sortBy, setSortBy] = useState<SortBy>('id');
+
+  // On a phone that reads NFC, a spool's tag can pick it (#89).
+  const canTap = useNfcBlocker() === null;
+  const tap = useTagTap(target => {
+    if (target.kind === 'slot') return 'That is a slot\'s tag. Read the tag on a spool.';
+    if (!spools.some(s => s.id === target.id)) return `Spool #${target.id} is archived or not in Spoolman.`;
+    onAssign(target.id);
+    setOpen(false);
+  });
+  const reading = tap.state.step === 'reading' || tap.state.step === 'looking-up';
+
+  // Closing the dialog stops listening for a tag.
+  const close = () => {
+    tap.cancel();
+    setOpen(false);
+  };
+
+  // A tag read first that Spoolman didn't know is linked to the spool picked
+  // for it, so that reading the tag finds the spool from then on.
+  const pick = (spoolId: number) => {
+    if (tap.state.step === 'unlinked') void linkPickedTag(spoolId, tap.state.uid);
+    onAssign(spoolId);
+    close();
+  };
 
   // Fetch filter fields when dialog opens
   useEffect(() => {
@@ -241,7 +278,7 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
   const hasFilterOptions = enabledFields.some(f => f.values.length > 0);
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={next => (next ? setOpen(true) : close())}>
       {/* h-full on both: the grid stretches this wrapper to the row's tallest
           card, and the button fills it, so every card in a row is one height. */}
       <div className="relative h-full">
@@ -410,10 +447,7 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
                 <CommandItem
                   key={spool.id}
                   value={buildSpoolSearchValue(spool)}
-                  onSelect={() => {
-                    onAssign(spool.id);
-                    setOpen(false);
-                  }}
+                  onSelect={() => pick(spool.id)}
                   className="flex items-center gap-3 py-2"
                 >
                   <SpoolColorSwatch filament={spool.filament} size="h-6 w-6" />
@@ -436,8 +470,37 @@ export function TraySlot({ tray, assignedSpool, spools, onAssign, onUnassign, mi
             </CommandGroup>
           </CommandList>
         </Command>
-        <div className="flex justify-end">
-          <Button variant="ghost" onClick={() => setOpen(false)}>
+        {tap.state.step === 'unlinked' && (
+          <div className="flex items-start gap-2 rounded-lg border p-3 text-sm">
+            <Link2 className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground" />
+            <p className="flex-1">
+              Spoolman doesn&apos;t know this tag yet. Pick its spool above, and the tag will be linked to it.
+            </p>
+            <button
+              type="button"
+              onClick={tap.cancel}
+              className="shrink-0 text-xs text-muted-foreground hover:text-foreground hover:underline"
+            >
+              Don&apos;t link
+            </button>
+          </div>
+        )}
+        {tap.state.step === 'error' && (
+          <p className="text-sm text-destructive">{tap.state.message}</p>
+        )}
+        {tap.state.step === 'reading' && tap.state.hint && (
+          <p className="text-sm text-muted-foreground">{tap.state.hint}</p>
+        )}
+        <div className="flex items-center gap-2">
+          {canTap && (
+            <Button variant="ghost" size="sm" onClick={tap.start} disabled={reading} className="text-muted-foreground">
+              {reading ? <Loader2 className="animate-spin" /> : <Nfc />}
+              {tap.state.step === 'reading' ? 'Waiting for a tag...'
+                : tap.state.step === 'looking-up' ? 'Looking it up...'
+                : 'Read NFC tag'}
+            </Button>
+          )}
+          <Button variant="ghost" onClick={close} className="ml-auto">
             Cancel
           </Button>
         </div>

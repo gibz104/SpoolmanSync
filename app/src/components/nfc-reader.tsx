@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { Nfc, Loader2, Link2 } from 'lucide-react';
@@ -8,31 +8,9 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { SpoolPickList } from '@/components/spool-pick-list';
 import type { Spool } from '@/lib/api/spoolman';
-import { normalizeTagUid, parseScanLink, scanTargetPath } from '@/lib/scan-codes';
-import { lookUpScanCode } from '@/lib/scan-client';
-import { nfcErrorMessage } from '@/lib/web-nfc';
-
-type ReadState =
-  | { step: 'idle' }
-  | { step: 'reading' }
-  | { step: 'looking-up' }
-  | { step: 'unlinked'; uid: string }
-  | { step: 'linking'; uid: string }
-  | { step: 'error'; message: string };
-
-/** The text of a tag's URL and text records, where a link would be. */
-function recordTexts(event: NDEFReadingEvent): string[] {
-  const texts: string[] = [];
-  for (const record of event.message?.records ?? []) {
-    if (!record.data || !['url', 'absolute-url', 'text'].includes(record.recordType)) continue;
-    try {
-      texts.push(new TextDecoder(record.encoding || 'utf-8').decode(record.data));
-    } catch {
-      // An encoding the browser can't decode holds no link we know.
-    }
-  }
-  return texts;
-}
+import { scanTargetPath } from '@/lib/scan-codes';
+import { linkTag } from '@/lib/scan-client';
+import { useTagTap } from '@/lib/use-tag-tap';
 
 /**
  * Read an NFC tag with this phone and open what it points at (#89): a spool or
@@ -42,108 +20,28 @@ function recordTexts(event: NDEFReadingEvent): string[] {
  */
 export function NFCReader({ spools }: { spools: Spool[] }) {
   const router = useRouter();
-  const [state, setState] = useState<ReadState>({ step: 'idle' });
-  const scan = useRef<AbortController | null>(null);
-  // A tag can be reported more than once before the scan stops.
-  const handled = useRef(false);
-
-  useEffect(() => () => scan.current?.abort(), []);
-
-  const handleTag = async (event: NDEFReadingEvent) => {
-    if (handled.current) return;
-    handled.current = true;
-    scan.current?.abort(); // one tag at a time
-    const uid = normalizeTagUid(event.serialNumber ?? '');
-    for (const text of recordTexts(event)) {
-      const target = parseScanLink(text);
-      if (!target) continue;
-      // A sticker written before tags were linked in Spoolman says which spool
-      // it is on, so Spoolman learns its UID now, without rewriting it. Never
-      // taken from a spool Spoolman already has it linked to.
-      if (target.kind === 'spool' && uid) void linkReadTag(target.id, uid);
-      return router.push(scanTargetPath(target));
-    }
-    if (!uid) {
-      setState({ step: 'error', message: 'This tag holds no spool link and reports no ID to look up.' });
-      return;
-    }
-    setState({ step: 'looking-up' });
-    try {
-      const target = await lookUpScanCode(uid);
-      if (target) router.push(scanTargetPath(target));
-      else setState({ step: 'unlinked', uid });
-    } catch {
-      setState({ step: 'error', message: 'Could not look the tag up in Spoolman.' });
-    }
-  };
-
-  const linkReadTag = async (spoolId: number, uid: string) => {
-    try {
-      const res = await fetch('/api/spools/tag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spoolId, uid, move: false }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.linked) toast.success(`Spoolman now knows this tag as spool #${spoolId}`);
-    } catch {
-      // Best effort: the tag opened its spool either way.
-    }
-  };
-
-  const handleRead = async () => {
-    if (!window.NDEFReader) return;
-    scan.current?.abort();
-    const controller = new AbortController();
-    scan.current = controller;
-    handled.current = false;
-    setState({ step: 'reading' });
-    try {
-      const reader = new window.NDEFReader();
-      reader.onreading = event => void handleTag(event);
-      reader.onreadingerror = () => {
-        // A tag that left too soon: the scan is still running, so the next tap retries.
-      };
-      await reader.scan({ signal: controller.signal });
-    } catch (err) {
-      if (controller.signal.aborted) return;
-      setState({ step: 'error', message: nfcErrorMessage(err, 'Could not start reading NFC tags.') });
-    }
-  };
-
-  const handleCancel = () => {
-    scan.current?.abort();
-    setState({ step: 'idle' });
-  };
+  const tap = useTagTap(target => router.push(scanTargetPath(target)));
+  const { state } = tap;
+  const [linking, setLinking] = useState(false);
 
   const handleLink = async (spool: Spool, uid: string) => {
-    setState({ step: 'linking', uid });
-    try {
-      const res = await fetch('/api/spools/tag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spoolId: spool.id, uid }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.supported === false) {
-        setState({ step: 'error', message: 'Linking tags to spools needs Spoolman 0.27 or later.' });
-        return;
-      }
-      if (!res.ok) {
-        setState({ step: 'error', message: data.error || 'Could not link the tag in Spoolman.' });
-        return;
-      }
+    setLinking(true);
+    const result = await linkTag(spool.id, uid);
+    if (result.linked) {
       toast.success(`Tag linked to spool #${spool.id}`);
       router.push(`/scan/spool/${spool.id}`);
-    } catch {
-      setState({ step: 'error', message: 'Could not link the tag in Spoolman.' });
+      return;
     }
+    setLinking(false);
+    tap.fail(result.supported
+      ? result.error || 'Could not link the tag in Spoolman.'
+      : 'Linking tags to spools needs Spoolman 0.27 or later.');
   };
 
   return (
     <div className="space-y-4">
       {(state.step === 'idle' || state.step === 'error') && (
-        <Button onClick={handleRead} className="w-full">
+        <Button onClick={tap.start} className="w-full">
           <Nfc className="h-4 w-4 mr-2" />
           Read NFC Tag
         </Button>
@@ -155,8 +53,12 @@ export function NFCReader({ spools }: { spools: Spool[] }) {
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
             {state.step === 'reading' ? 'Hold a tag near your phone...' : 'Looking the tag up...'}
           </Button>
-          <Button variant="outline" onClick={handleCancel}>Cancel</Button>
+          <Button variant="outline" onClick={tap.cancel}>Cancel</Button>
         </div>
+      )}
+
+      {state.step === 'reading' && state.hint && (
+        <p className="text-sm text-muted-foreground">{state.hint}</p>
       )}
 
       {state.step === 'error' && (
@@ -165,7 +67,7 @@ export function NFCReader({ spools }: { spools: Spool[] }) {
         </Alert>
       )}
 
-      {(state.step === 'unlinked' || state.step === 'linking') && (
+      {state.step === 'unlinked' && (
         <div className="space-y-3">
           <Alert>
             <Link2 className="h-4 w-4" />
@@ -175,8 +77,8 @@ export function NFCReader({ spools }: { spools: Spool[] }) {
               <span className="block font-mono text-xs text-muted-foreground mt-1">{state.uid}</span>
             </AlertDescription>
           </Alert>
-          <SpoolPickList spools={spools} onPick={spool => handleLink(spool, state.uid)} disabled={state.step === 'linking'} />
-          <Button variant="outline" onClick={handleCancel} className="w-full" disabled={state.step === 'linking'}>
+          <SpoolPickList spools={spools} onPick={spool => handleLink(spool, state.uid)} disabled={linking} />
+          <Button variant="outline" onClick={tap.cancel} className="w-full" disabled={linking}>
             Cancel
           </Button>
         </div>

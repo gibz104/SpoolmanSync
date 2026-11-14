@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { isSecureUrl, nfcErrorMessage, webNfcBlocker, type NfcEnvironment } from './web-nfc';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { isSecureUrl, nfcErrorMessage, readNfcTag, webNfcBlocker, type NfcEnvironment } from './web-nfc';
 
 /**
  * Issue #84: in the Home Assistant sidebar and app, writing a tag failed only
@@ -66,5 +66,89 @@ describe('nfcErrorMessage', () => {
   it('falls back for anything else', () => {
     expect(nfcErrorMessage(named('TypeError'), 'Could not start reading NFC tags.')).toBe('Could not start reading NFC tags.');
     expect(nfcErrorMessage('not an error', 'fallback')).toBe('fallback');
+  });
+});
+
+describe('readNfcTag', () => {
+  /** Chrome's NDEFReader, with a hand to hold tags to it. */
+  class FakeReader {
+    static last: FakeReader;
+    static scanError: Error | null = null;
+    onreading: ((event: unknown) => void) | null = null;
+    onreadingerror: (() => void) | null = null;
+    signal?: AbortSignal;
+    constructor() { FakeReader.last = this; }
+    async scan(options?: { signal?: AbortSignal }) {
+      this.signal = options?.signal;
+      if (FakeReader.scanError) throw FakeReader.scanError;
+    }
+    tap(serialNumber: string, records: { recordType: string; data?: DataView }[] = []) {
+      this.onreading?.({ serialNumber, message: { records } });
+    }
+  }
+  const record = (recordType: string, text: string) =>
+    ({ recordType, data: new DataView(new TextEncoder().encode(text).buffer) });
+
+  const withReader = () => {
+    FakeReader.scanError = null;
+    vi.stubGlobal('window', { NDEFReader: FakeReader });
+  };
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('gives the tag\'s UID the way Spoolman stores it, and the text of its link and text records', async () => {
+    withReader();
+    const read = readNfcTag(new AbortController().signal);
+    FakeReader.last.tap('04:a2:b3:c4:d5:e6:f7', [
+      record('url', 'https://sync.example.com/scan/spool/7'),
+      record('mime', 'not a link'),
+      record('text', 'web+spoolman:s-7'),
+    ]);
+    expect(await read).toEqual({
+      uid: '04A2B3C4D5E6F7',
+      texts: ['https://sync.example.com/scan/spool/7', 'web+spoolman:s-7'],
+    });
+    // One tag, then the scan stops.
+    expect(FakeReader.last.signal?.aborted).toBe(true);
+  });
+
+  it('reads a blank tag as its UID alone', async () => {
+    withReader();
+    const read = readNfcTag(new AbortController().signal);
+    FakeReader.last.tap('aa:bb:cc:dd');
+    expect(await read).toEqual({ uid: 'AABBCCDD', texts: [] });
+  });
+
+  it('keeps reading past a tag it could not read, and says so', async () => {
+    withReader();
+    const unreadable = vi.fn();
+    const read = readNfcTag(new AbortController().signal, unreadable);
+    FakeReader.last.onreadingerror?.();
+    expect(unreadable).toHaveBeenCalledTimes(1);
+    expect(FakeReader.last.signal?.aborted).toBe(false);
+    FakeReader.last.tap('aa:bb:cc:dd');
+    expect((await read).uid).toBe('AABBCCDD');
+  });
+
+  it('stops when the caller aborts, and ignores tags after that', async () => {
+    withReader();
+    const caller = new AbortController();
+    const unreadable = vi.fn();
+    const read = readNfcTag(caller.signal, unreadable);
+    caller.abort();
+    await expect(read).rejects.toMatchObject({ name: 'AbortError' });
+    expect(FakeReader.last.signal?.aborted).toBe(true);
+    FakeReader.last.onreadingerror?.();
+    expect(unreadable).not.toHaveBeenCalled();
+  });
+
+  it('fails with the error the scan fails with, such as permission refused', async () => {
+    withReader();
+    FakeReader.scanError = Object.assign(new Error('denied'), { name: 'NotAllowedError' });
+    await expect(readNfcTag(new AbortController().signal)).rejects.toMatchObject({ name: 'NotAllowedError' });
+  });
+
+  it('fails at once without Web NFC', async () => {
+    vi.stubGlobal('window', {});
+    await expect(readNfcTag(new AbortController().signal)).rejects.toMatchObject({ name: 'NotSupportedError' });
   });
 });

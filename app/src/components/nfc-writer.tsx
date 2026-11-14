@@ -33,6 +33,7 @@ import { buildExternalUrl } from '@/lib/ingress-path';
 import { isSecureUrl, nfcErrorMessage, writeNfcLink, type NfcBlocker } from '@/lib/web-nfc';
 import { useNfcBlocker } from '@/lib/use-nfc-blocker';
 import { copyText } from '@/lib/clipboard';
+import { linkTag } from '@/lib/scan-client';
 
 type SortBy = 'id' | 'name' | 'material' | 'vendor';
 
@@ -220,23 +221,14 @@ export function NFCWriter({ spools, directAccessPort, qrBaseUrl }: NFCWriterProp
   // So the tag identifies the spool in Spoolman too (0.27+, #89). Best effort:
   // the tag is written either way.
   const linkWrittenTag = async (spoolId: number, uid: string) => {
-    try {
-      const res = await fetch('/api/spools/tag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spoolId, uid }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (selectedId.current !== spoolId) return;
-      if (res.ok && data.linked) {
-        setLinkNote(data.movedFrom !== null && data.movedFrom !== undefined
-          ? `Spoolman now knows this tag as spool #${spoolId} (it was linked to spool #${data.movedFrom}).`
-          : `Spoolman now knows this tag as spool #${spoolId}.`);
-      } else if (!res.ok) {
-        setLinkNote(`The tag works, but Spoolman could not link it to the spool: ${data.error || 'unknown error'}.`);
-      }
-    } catch {
-      if (selectedId.current === spoolId) setLinkNote('The tag works, but Spoolman could not be reached to link it to the spool.');
+    const result = await linkTag(spoolId, uid);
+    if (selectedId.current !== spoolId) return;
+    if (result.linked) {
+      setLinkNote(result.movedFrom != null
+        ? `Spoolman now knows this tag as spool #${spoolId} (it was linked to spool #${result.movedFrom}).`
+        : `Spoolman now knows this tag as spool #${spoolId}.`);
+    } else if (result.error) {
+      setLinkNote(`The tag works, but Spoolman could not link it to the spool: ${result.error}.`);
     }
   };
 

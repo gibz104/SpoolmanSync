@@ -18,6 +18,34 @@ export async function lookUpScanCode(code: string): Promise<ScanTarget | null> {
   return (await res.json()).target;
 }
 
+export interface LinkResult {
+  /** Spoolman links tags (0.27 and later). */
+  supported: boolean;
+  linked: boolean;
+  /** The spool the link was moved from, if another spool held the tag. */
+  movedFrom?: number | null;
+  error?: string;
+}
+
+/**
+ * Link an NFC tag to a spool in Spoolman. With `move: false` (a tag only being
+ * read), a tag Spoolman already knows is left where it is. Never throws.
+ */
+export async function linkTag(spoolId: number, uid: string, { move = true } = {}): Promise<LinkResult> {
+  try {
+    const res = await fetch('/api/spools/tag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spoolId, uid, move }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { supported: true, linked: false, error: data.error || 'Could not link the tag in Spoolman' };
+    return { supported: data.supported !== false, linked: !!data.linked, movedFrom: data.movedFrom ?? null };
+  } catch {
+    return { supported: true, linked: false, error: 'SpoolmanSync could not be reached' };
+  }
+}
+
 /** Assign a spool to a tray or slot. Any scans that led here are used up. */
 export async function assignSpool(spoolId: number, slotKey: string): Promise<void> {
   const res = await fetch('/api/spools', {

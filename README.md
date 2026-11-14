@@ -99,7 +99,7 @@ The generated Home Assistant automations only report tray changes, for RFID auto
 Spool matching works in three ways:
 - **Manual assignment** (all vendors) — click a tray, pick a spool
 - **RFID auto-match** (Bambu Lab spools with tags) — remembers which physical spool is which for future swaps. Creality CFS reports a material-type code rather than a per-spool serial, so Creality spools are matched by their tray assignment instead
-- **QR code / NFC** (any vendor) — scan printed QR labels or NFC stickers with your phone to assign, or scan a spool and then the tag of the tray or storage slot it goes in. NFC tags linked to spools in Spoolman (0.27 or later) are recognized too, and tags SpoolmanSync writes are linked there
+- **QR code / NFC** (any vendor) — scan printed QR labels or NFC stickers with your phone to assign, open a tray on the dashboard and hold the spool's NFC tag to the phone, or scan a spool and then the tag of the tray or storage slot it goes in. NFC tags linked to spools in Spoolman (0.27 or later) are recognized too, and tags SpoolmanSync writes are linked there
 
 ## Low Stock Alerts
 
