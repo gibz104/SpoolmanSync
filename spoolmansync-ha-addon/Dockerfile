@@ -30,6 +30,8 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
+# Shutdown is handled in src/instrumentation.ts
+ENV NEXT_MANUAL_SIG_HANDLE=true
 ENV HA_MODE=addon
 
 # Install runtime dependencies
