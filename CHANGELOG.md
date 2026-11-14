@@ -5,6 +5,17 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- Printer setup passed the flow ID it was sent straight into a request to Home Assistant, so a crafted request could make SpoolmanSync call any Home Assistant service with its login, such as one that unlocks a lock. Every ID SpoolmanSync puts into a Home Assistant or Spoolman request is now checked.
+- SpoolmanSync refuses API requests that another website makes through your browser. It has no login of its own, so a page you visited could change its settings, or use the hole above.
+- URLs entered in Settings must start with http:// or https://, and one padded with thousands of slashes no longer ties up the server.
+- The images no longer contain the build and test tools (about 230 MB less), and Prisma no longer contacts its servers at every start. They are built with npm 12, which runs install scripts only for the packages that need one (better-sqlite3 and Prisma), and the build stops if a new dependency brings another.
+- The app and add-on images run on Node.js 24 (LTS). They ran on Node.js 20, which reached end of life in April 2026 and no longer gets security fixes.
+- Updated ws to 8.23.0, which fixes a denial of service: a peer that floods pings without reading the replies could exhaust memory. SpoolmanSync uses it for its Home Assistant connection.
+- Updated Next.js to 16.4.6, React to 19.3.1, Prisma to 7.10.1 and the other dependencies, and moved a lint tool onto a minimatch release that fixes a published denial of service (GHSA-g3hv-75wg-m249).
+
 ## [2.1.0] - 2026-11-14
 
 > Upgrade note for H3C owners: once SpoolmanSync finds all nine AMS 3H trays, the dashboard asks you to reconfigure automations. Do it, so tray changes in trays 5 to 9 are picked up too.
