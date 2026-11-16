@@ -382,16 +382,9 @@ export class SpoolmanClient {
       }
     }
 
-    // Get current spool to preserve other extra fields (like tag)
-    // Spoolman's PATCH replaces the entire extra object
-    const spool = await this.getSpool(spoolId);
-    const newExtra: Record<string, string> = {};
-    if (spool.extra) {
-      for (const [key, value] of Object.entries(spool.extra)) {
-        newExtra[key] = value;
-      }
-    }
-    newExtra['active_tray'] = JSON.stringify(trayId);
+    // Spoolman merges extra fields by key; only write the assignment so a
+    // concurrent update to another field cannot be overwritten by a stale GET.
+    const newExtra = { active_tray: JSON.stringify(trayId) };
 
     // Build the PATCH body. `location` is a native top-level field (NOT in extra).
     const body: Record<string, unknown> = { extra: await this.sanitizeExtra(newExtra) };
@@ -414,27 +407,15 @@ export class SpoolmanClient {
    * Unassign a spool from its current tray
    */
   async unassignSpoolFromTray(spoolId: number): Promise<Spool> {
-    // Get current spool to preserve other extra fields
+    // Read the current tray and location for the guarded location clear.
     const spool = await this.getSpool(spoolId);
 
     // Capture the tray we're leaving (before clearing it) so we can decide
     // whether to also clear the native location field.
     const oldTrayRaw = spool.extra?.['active_tray'];
 
-    // Build new extra object with active_tray set to empty string
-    // Spoolman's PATCH replaces the entire extra object, so we need to include
-    // all fields we want to keep. Setting active_tray to "" clears the assignment.
-    const newExtra: Record<string, string> = {};
-    if (spool.extra) {
-      for (const [key, value] of Object.entries(spool.extra)) {
-        if (key !== 'active_tray') {
-          newExtra[key] = value;
-        }
-      }
-    }
-    // Set active_tray to JSON-encoded empty string to clear it
-    // Spoolman requires extra field values to be valid JSON
-    newExtra['active_tray'] = JSON.stringify('');
+    // Keep the JSON-encoded empty assignment, without rewriting other keys.
+    const newExtra = { active_tray: JSON.stringify('') };
 
     const body: Record<string, unknown> = { extra: await this.sanitizeExtra(newExtra) };
 
