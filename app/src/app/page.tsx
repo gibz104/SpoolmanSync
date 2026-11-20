@@ -11,6 +11,7 @@ import { RefreshCw } from 'lucide-react';
 import type { HAPrinter } from '@/lib/api/homeassistant';
 import type { Spool } from '@/lib/api/spoolman';
 import type { ActiveAlert } from '@/lib/alerts';
+import { movePrinter, sortPrinters } from '@/lib/printer-order';
 import Link from 'next/link';
 
 interface PrinterWithSpools extends HAPrinter {
@@ -258,6 +259,23 @@ export default function Dashboard() {
     }
   };
 
+  /** Move a printer one place up or down, and remember the order (#105). */
+  const handlePrinterMove = async (prefix: string, offset: -1 | 1) => {
+    const order = movePrinter(printers.map(p => p.prefix), prefix, offset);
+    setPrinters(current => sortPrinters(current, order));
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'printer_order', order }),
+      });
+      if (!res.ok) throw new Error('Failed to save the printer order');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save the printer order');
+      fetchData();
+    }
+  };
+
   const handleSpoolUnassign = async (spoolId: number) => {
     try {
       const res = await fetch('/api/spools', {
@@ -488,7 +506,7 @@ export default function Dashboard() {
               </Alert>
             )}
 
-            {printers.map((printer) => (
+            {printers.map((printer, index) => (
               <PrinterCard
                 key={printer.entity_id}
                 printer={printer as Parameters<typeof PrinterCard>[0]['printer']}
@@ -496,6 +514,10 @@ export default function Dashboard() {
                 onSpoolAssign={handleSpoolAssign}
                 onSpoolUnassign={handleSpoolUnassign}
                 showSpoolLocation={settings?.showSpoolLocation}
+                reorder={printers.length > 1 ? {
+                  onMoveUp: index > 0 ? () => handlePrinterMove(printer.prefix, -1) : undefined,
+                  onMoveDown: index < printers.length - 1 ? () => handlePrinterMove(printer.prefix, 1) : undefined,
+                } : undefined}
               />
             ))}
           </div>

@@ -13,6 +13,7 @@ import { createActivityLog } from '@/lib/activity-log';
 import { reconnectUsageTracker } from '@/lib/usage/tracker';
 import { isWebhookAuthEnabled } from '@/lib/webhook-secret';
 import { parseServiceUrl, trimTrailingSlashes } from '@/lib/url-safety';
+import { PRINTER_ORDER_KEY, isPrinterOrder, mergePrinterOrder, parsePrinterOrder } from '@/lib/printer-order';
 import {
   UNASSIGNED_LOCATION_KEY,
   SPOOLMAN_LOCATION_MAX,
@@ -363,6 +364,21 @@ export async function POST(request: NextRequest) {
         message: 'Home Assistant reconnected with updated credentials',
       });
 
+      return NextResponse.json({ success: true });
+    }
+
+    if (type === 'printer_order') {
+      // The order the user put the printers in on the dashboard (#105).
+      if (!isPrinterOrder(body.order)) {
+        return NextResponse.json({ error: 'order must be a list of printers' }, { status: 400 });
+      }
+      const stored = await prisma.settings.findUnique({ where: { key: PRINTER_ORDER_KEY } });
+      const value = JSON.stringify(mergePrinterOrder(body.order, parsePrinterOrder(stored?.value)));
+      await prisma.settings.upsert({
+        where: { key: PRINTER_ORDER_KEY },
+        create: { key: PRINTER_ORDER_KEY, value },
+        update: { value },
+      });
       return NextResponse.json({ success: true });
     }
 

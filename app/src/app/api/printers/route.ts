@@ -8,6 +8,7 @@ import { getVirtualPrinters, virtualPrintersToHAPrinters, migrateVirtualKeys, wi
 import { detectTrayMismatch } from '@/lib/tray-mismatch';
 import { reconcileSpoolLocations } from '@/lib/spool-location';
 import { filterHiddenPrinters } from '@/lib/hidden-printers';
+import { PRINTER_ORDER_KEY, parsePrinterOrder, sortPrinters } from '@/lib/printer-order';
 
 export async function GET() {
   try {
@@ -210,7 +211,9 @@ export async function GET() {
       // Non-critical check, don't block the response
     }
 
-    return NextResponse.json({ printers, automationsStale });
+    // In the order the user put them in on the dashboard (#105).
+    const order = await prisma.settings.findUnique({ where: { key: PRINTER_ORDER_KEY } });
+    return NextResponse.json({ printers: sortPrinters(printers, parsePrinterOrder(order?.value)), automationsStale });
   } catch (error) {
     console.error('Error fetching printers:', error);
     return NextResponse.json({ error: 'Failed to fetch printers' }, { status: 500 });

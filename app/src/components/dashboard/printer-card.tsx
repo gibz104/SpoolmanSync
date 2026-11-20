@@ -1,6 +1,8 @@
 'use client';
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { ChevronDown, ChevronUp } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { TraySlot } from './tray-slot';
 import type { HATray } from '@/lib/api/homeassistant';
 import type { Spool } from '@/lib/api/spoolman';
@@ -43,16 +45,44 @@ interface PrinterCardProps {
   onSpoolAssign: (trayId: string, spoolId: number) => void;
   onSpoolUnassign: (spoolId: number) => void;
   showSpoolLocation?: boolean;
+  /** Buttons to move the printer up or down the dashboard; a missing handler disables its button. */
+  reorder?: { onMoveUp?: () => void; onMoveDown?: () => void };
 }
 
-export function PrinterCard({ printer, spools, onSpoolAssign, onSpoolUnassign, showSpoolLocation }: PrinterCardProps) {
+export function PrinterCard({ printer, spools, onSpoolAssign, onSpoolUnassign, showSpoolLocation, reorder }: PrinterCardProps) {
   return (
     <Card className="w-full">
       <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2">
+        <CardTitle className="flex items-center gap-2 self-center">
           <span className="h-3 w-3 rounded-full bg-green-500" />
           {printer.name}
         </CardTitle>
+        {reorder && (
+          <CardAction className="row-span-1 -my-2 flex gap-1 self-center">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground"
+              onClick={reorder.onMoveUp}
+              disabled={!reorder.onMoveUp}
+              aria-label={`Move ${printer.name} up`}
+              title="Move up"
+            >
+              <ChevronUp />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground"
+              onClick={reorder.onMoveDown}
+              disabled={!reorder.onMoveDown}
+              aria-label={`Move ${printer.name} down`}
+              title="Move down"
+            >
+              <ChevronDown />
+            </Button>
+          </CardAction>
+        )}
       </CardHeader>
       <CardContent className="space-y-6">
         {printer.ams_units.map((ams) => (
