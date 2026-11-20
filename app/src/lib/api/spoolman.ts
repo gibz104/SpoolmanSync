@@ -278,6 +278,23 @@ export class SpoolmanClient {
     return extra;
   }
 
+  /**
+   * The `extra` to PATCH so that only the keys in `changes` change.
+   *
+   * Spoolman merges a PATCH's extra fields by key from 0.22.0, so only the
+   * changes are sent and a field another client changed meanwhile is left
+   * alone. Before 0.22.0 a PATCH replaced the whole object, so the spool's
+   * other fields (its serial, the user's own fields) have to go back with it.
+   * They also go back when the version can't be read, which is safe on any
+   * version.
+   */
+  private async extraPatch(spool: Spool | number, changes: Record<string, string>): Promise<Record<string, string>> {
+    const merges = await this.isAtLeast(22).catch(() => false);
+    if (merges) return this.sanitizeExtra({ ...changes });
+    const current = typeof spool === 'number' ? await this.getSpool(spool) : spool;
+    return this.sanitizeExtra({ ...current.extra, ...changes });
+  }
+
   private request(endpoint: string, options: RequestInit = {}): Promise<Response> {
     return fetch(`${this.baseUrl}/api/v1${endpoint}`, {
       // No request may hang for ever: the usage tracker waits on these.
@@ -382,12 +399,10 @@ export class SpoolmanClient {
       }
     }
 
-    // Spoolman merges extra fields by key; only write the assignment so a
-    // concurrent update to another field cannot be overwritten by a stale GET.
-    const newExtra = { active_tray: JSON.stringify(trayId) };
-
     // Build the PATCH body. `location` is a native top-level field (NOT in extra).
-    const body: Record<string, unknown> = { extra: await this.sanitizeExtra(newExtra) };
+    const body: Record<string, unknown> = {
+      extra: await this.extraPatch(spoolId, { active_tray: JSON.stringify(trayId) }),
+    };
 
     // If location sync is enabled, set the native location to reflect this tray.
     // An unresolved tray ('') leaves location untouched.
@@ -414,10 +429,11 @@ export class SpoolmanClient {
     // whether to also clear the native location field.
     const oldTrayRaw = spool.extra?.['active_tray'];
 
-    // Keep the JSON-encoded empty assignment, without rewriting other keys.
-    const newExtra = { active_tray: JSON.stringify('') };
-
-    const body: Record<string, unknown> = { extra: await this.sanitizeExtra(newExtra) };
+    // A JSON-encoded empty string clears the assignment (Spoolman requires
+    // extra field values to be valid JSON).
+    const body: Record<string, unknown> = {
+      extra: await this.extraPatch(spool, { active_tray: JSON.stringify('') }),
+    };
 
     // GUARDED location clear: only touch `location` if it still equals the label
     // we would have set for the tray being left. This means a location the user
@@ -461,24 +477,10 @@ export class SpoolmanClient {
     // First, clear this serial number from any other spools that have it
     await this.clearDuplicateTags(trayUuid, spoolId);
 
-    // Get current spool to preserve other extra fields
-    const spool = await this.getSpool(spoolId);
-
-    // Build new extra object
-    const newExtra: Record<string, string> = {};
-    if (spool.extra) {
-      for (const [key, value] of Object.entries(spool.extra)) {
-        newExtra[key] = value;
-      }
-    }
-
-    // Store the spool serial number
-    newExtra['tag'] = JSON.stringify(trayUuid);
-
     return this.fetch<Spool>(`/spool/${positiveId(spoolId, 'spool ID')}`, {
       method: 'PATCH',
       body: JSON.stringify({
-        extra: await this.sanitizeExtra(newExtra),
+        extra: await this.extraPatch(spoolId, { tag: JSON.stringify(trayUuid) }),
       }),
     });
   }
@@ -497,20 +499,10 @@ export class SpoolmanClient {
       if (normalizeTag(spool.extra?.['tag']) !== target) continue;
 
       // Clear the tag from this spool
-      const newExtra: Record<string, string> = {};
-      if (spool.extra) {
-        for (const [key, value] of Object.entries(spool.extra)) {
-          if (key !== 'tag') {
-            newExtra[key] = value;
-          }
-        }
-      }
-      newExtra['tag'] = JSON.stringify('');
-
       await this.fetch<Spool>(`/spool/${spool.id}`, {
         method: 'PATCH',
         body: JSON.stringify({
-          extra: await this.sanitizeExtra(newExtra),
+          extra: await this.extraPatch(spool, { tag: JSON.stringify('') }),
         }),
       });
     }
@@ -533,9 +525,14 @@ export class SpoolmanClient {
    * which it does from 0.27 (#89).
    */
   async supportsTagUids(): Promise<boolean> {
+    return this.isAtLeast(27);
+  }
+
+  /** Whether Spoolman is at least version 0.<minor>; 1.0 and later count too. */
+  private async isAtLeast(minor: number): Promise<boolean> {
     const { version } = await this.fetch<{ version?: string }>('/info');
-    const [major, minor] = (version ?? '').split('.').map(Number);
-    return major > 0 || (major === 0 && minor >= 27);
+    const [major, min] = (version ?? '').split('.').map(Number);
+    return major > 0 || (major === 0 && min >= minor);
   }
 
   /**
