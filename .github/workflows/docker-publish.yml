@@ -7,23 +7,23 @@ on:
       - feature/creality-support
     tags:
       - 'v*'
+  # Builds the images without publishing them, so a pull request shows whether they still build
+  pull_request:
+    branches:
+      - main
 
-env:
-  REGISTRY_GITHUB: ghcr.io
-  REGISTRY_DOCKERHUB: docker.io
-  IMAGE_NAME_APP: spoolmansync
-  IMAGE_NAME_HA: spoolmansync-homeassistant
-  IMAGE_NAME_ADDON: spoolmansync-addon
+permissions:
+  contents: read
 
+# Each image is built by Docker's reusable workflow, which builds every platform
+# natively on its own runner (arm64 on an Arm runner rather than under QEMU),
+# joins them into one multi-arch image, and signs the build's provenance.
 jobs:
-  build-and-push:
+  check-version:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
     steps:
       - name: Checkout repository
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/checkout@v7
 
       - name: Verify addon version matches package.json
@@ -37,106 +37,117 @@ jobs:
           fi
           echo "Versions match: $APP_VERSION"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY_GITHUB }}
+  # Main app image (multi-arch: amd64 + arm64)
+  app:
+    needs: check-version
+    uses: docker/github-builder/.github/workflows/build.yml@v1
+    permissions:
+      contents: read
+      packages: write # to push to ghcr.io
+      id-token: write # to sign the provenance and cache with GitHub OIDC
+    with:
+      output: image
+      push: ${{ github.event_name != 'pull_request' }}
+      platforms: linux/amd64,linux/arm64
+      context: app
+      cache: true
+      cache-scope: app
+      cache-mode: max
+      set-meta-labels: true
+      meta-images: |
+        ghcr.io/${{ github.repository_owner }}/spoolmansync
+        docker.io/gibz104/spoolmansync
+      meta-tags: |
+        # Set latest tag for main branch and version tags
+        type=raw,value=latest,enable={{is_default_branch}}
+        type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+        # Set version tag (v1.0.0 -> 1.0.0)
+        type=semver,pattern={{version}}
+        # Set major.minor tag (v1.0.0 -> 1.0)
+        type=semver,pattern={{major}}.{{minor}}
+        # Beta tag for feature branches
+        type=raw,value=creality-beta,enable=${{ github.ref == 'refs/heads/feature/creality-support' }}
+        # Names a pull request's build, which is never pushed
+        type=ref,event=pr
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY_DOCKERHUB }}
+        - registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Generate tags based on trigger type
-      - name: Generate Docker tags for app
-        id: meta-app
-        uses: docker/metadata-action@v6
-        with:
-          images: |
-            ${{ env.REGISTRY_GITHUB }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME_APP }}
-            ${{ env.REGISTRY_DOCKERHUB }}/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME_APP }}
-          tags: |
-            # Set latest tag for main branch and version tags
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            # Set version tag (v1.0.0 -> 1.0.0)
-            type=semver,pattern={{version}}
-            # Set major.minor tag (v1.0.0 -> 1.0)
-            type=semver,pattern={{major}}.{{minor}}
-            # Beta tag for feature branches
-            type=raw,value=creality-beta,enable=${{ github.ref == 'refs/heads/feature/creality-support' }}
+  # Home Assistant image (multi-arch: amd64 + arm64)
+  homeassistant:
+    needs: check-version
+    uses: docker/github-builder/.github/workflows/build.yml@v1
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    with:
+      output: image
+      push: ${{ github.event_name != 'pull_request' }}
+      platforms: linux/amd64,linux/arm64
+      context: homeassistant
+      cache: true
+      cache-scope: homeassistant
+      cache-mode: max
+      set-meta-labels: true
+      meta-images: |
+        ghcr.io/${{ github.repository_owner }}/spoolmansync-homeassistant
+        docker.io/gibz104/spoolmansync-homeassistant
+      meta-tags: |
+        type=raw,value=latest,enable={{is_default_branch}}
+        type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
+        type=raw,value=creality-beta,enable=${{ github.ref == 'refs/heads/feature/creality-support' }}
+        type=ref,event=pr
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        - registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Generate Docker tags for HA
-        id: meta-ha
-        uses: docker/metadata-action@v6
-        with:
-          images: |
-            ${{ env.REGISTRY_GITHUB }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME_HA }}
-            ${{ env.REGISTRY_DOCKERHUB }}/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME_HA }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=creality-beta,enable=${{ github.ref == 'refs/heads/feature/creality-support' }}
-
-      - name: Generate Docker tags for addon
-        id: meta-addon
-        uses: docker/metadata-action@v6
-        with:
-          images: |
-            ${{ env.REGISTRY_GITHUB }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME_ADDON }}
-            ${{ env.REGISTRY_DOCKERHUB }}/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME_ADDON }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=creality-beta,enable=${{ github.ref == 'refs/heads/feature/creality-support' }}
-
-      # Build and push main app image (multi-arch: amd64 + arm64)
-      - name: Build and push SpoolmanSync app
-        uses: docker/build-push-action@v7
-        with:
-          context: ./app
-          file: ./app/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta-app.outputs.tags }}
-          labels: ${{ steps.meta-app.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Build and push Home Assistant image (multi-arch: amd64 + arm64)
-      - name: Build and push SpoolmanSync Home Assistant
-        uses: docker/build-push-action@v7
-        with:
-          context: ./homeassistant
-          file: ./homeassistant/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta-ha.outputs.tags }}
-          labels: ${{ steps.meta-ha.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Build and push HA add-on image (multi-arch: amd64 + arm64)
-      # Context is repo root since Dockerfile needs both app/ and spoolmansync-ha-addon/rootfs/
-      - name: Build and push SpoolmanSync Add-on
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./spoolmansync-ha-addon/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta-addon.outputs.tags }}
-          labels: ${{ steps.meta-addon.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  # HA add-on image (multi-arch: amd64 + arm64)
+  # Context is repo root since Dockerfile needs both app/ and spoolmansync-ha-addon/rootfs/
+  addon:
+    needs: check-version
+    uses: docker/github-builder/.github/workflows/build.yml@v1
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    with:
+      output: image
+      push: ${{ github.event_name != 'pull_request' }}
+      platforms: linux/amd64,linux/arm64
+      context: .
+      file: spoolmansync-ha-addon/Dockerfile
+      cache: true
+      cache-scope: addon
+      cache-mode: max
+      set-meta-labels: true
+      meta-images: |
+        ghcr.io/${{ github.repository_owner }}/spoolmansync-addon
+        docker.io/gibz104/spoolmansync-addon
+      meta-tags: |
+        type=raw,value=latest,enable={{is_default_branch}}
+        type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
+        type=raw,value=creality-beta,enable=${{ github.ref == 'refs/heads/feature/creality-support' }}
+        type=ref,event=pr
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        - registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
