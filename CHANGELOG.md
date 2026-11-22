@@ -5,7 +5,7 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.2] - 2026-11-22
 
 ### Added
 - Printer order on the dashboard (#105). With more than one printer, each printer card has up and down arrows at its top right to move it. The order is saved, and the Scan pages and tray lists follow it too.
