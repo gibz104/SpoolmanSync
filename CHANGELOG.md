@@ -5,6 +5,14 @@ All notable changes to SpoolmanSync will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Printer order on the dashboard (#105). With more than one printer, each printer card has up and down arrows at its top right to move it. The order is saved, and the Scan pages and tray lists follow it too.
+
+### Fixed
+- Assigning or unassigning a spool, or storing its serial, no longer puts back an older value in the spool's other extra fields, such as a custom field changed in Spoolman at the same moment (#103, contributed by @Un0kNow). With Spoolman 0.22 or later SpoolmanSync now sends only the field it changes. Older versions replace all of a spool's extra fields on every write, so they still get the full set.
+
 ## [2.1.1] - 2026-11-14
 
 ### Security
