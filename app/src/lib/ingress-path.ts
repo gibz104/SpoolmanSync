@@ -28,6 +28,18 @@ export function getIngressPath(): string {
 }
 
 /**
+ * The ingress base path from the X-Ingress-Path header Home Assistant sends
+ * with each request through ingress (e.g., "/api/hassio_ingress/abc123"), for
+ * redirects the server sends. Returns '' outside ingress, and for a value
+ * that doesn't look like an ingress path, so a redirect stays a path on the
+ * address the browser used and never points at another site.
+ */
+export function ingressPathFromHeader(header: string | null): string {
+  if (!header || !/^(\/[\w-]+)+\/?$/.test(header)) return '';
+  return header.replace(/\/$/, '');
+}
+
+/**
  * Check if running in HA ingress mode
  */
 export function isIngressMode(): boolean {
