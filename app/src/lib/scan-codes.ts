@@ -37,6 +37,16 @@ export function slotKeyFromSegment(segment: string): string | null {
   }
 }
 
+/**
+ * A spool's id from the last segment of a link's path, such as the 12 of
+ * Spoolman's /spool/show/12, or null if the segment is not a whole number.
+ */
+export function spoolIdFromSegment(segment: string): number | null {
+  if (!/^\d+$/.test(segment)) return null;
+  const id = Number(segment);
+  return Number.isSafeInteger(id) ? id : null;
+}
+
 /** The page a scanned spool or slot opens. */
 export function scanTargetPath(target: ScanTarget): string {
   return target.kind === 'spool' ? `/scan/spool/${target.id}` : slotPath(target.key);
